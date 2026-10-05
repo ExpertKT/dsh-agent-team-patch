@@ -42,16 +42,16 @@
     {
       "package": "dsh-experimental-client-ui-agent-team",
       "path": "lib/client.js",
-      "bytes": 37895,
+      "bytes": 39548,
       "pristine": "3a679458016b30b3374329c8470902b6293209a4084ece33c1b5ec29699e35c4",
-      "patched": "825313ffa16276e2c84869886cf53f50f0cc669b3ccffb7e672cd888b4f4bbe5"
+      "patched": "8507acfb8f0674f5fe41f40ef30de994bd817a5ee8bf612c95491deac45bcfb2"
     },
     {
       "package": "dsh-experimental-tool-agent-team",
       "path": "lib/index.js",
-      "bytes": 25249,
+      "bytes": 27527,
       "pristine": "cafdbb7a050431b17251527789d0fcb2e9b95c006a7513786c2c43fea3aca937",
-      "patched": "c8220026830b81b3a611fd38b80512e3e6eead7d6a8b32469a13074a4c8a149e"
+      "patched": "eb149f033207189c18c8f91f0285fdfae4f310e33bd167f0cc3e524453fe88e3"
     }
   ]
 }

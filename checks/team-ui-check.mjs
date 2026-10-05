@@ -68,6 +68,8 @@ const requireShim = (id) => stubs.has(id) ? stubs.get(id) : requireFromApp(id);
 
 /** Walk an element tree by calling every component body once. */
 const visited = [];
+/** Host elements (`select`, `button`, …) captured so the check can drive them. */
+const hosts = [];
 const walk = (node, props, overrides) => {
 	if (node === null || node === void 0 || typeof node === "boolean" || typeof node === "string" || typeof node === "number") return;
 	if (Array.isArray(node)) {
@@ -83,6 +85,7 @@ const walk = (node, props, overrides) => {
 		walk(type.prototype?.isReactComponent === void 0 ? type(own) : new type(own).render(), own, overrides);
 		return;
 	}
+	if (typeof type === "string") hosts.push({ type, props: own });
 	// Host elements and fragments (`react/jsx-runtime` exports the latter as a
 	// symbol type) both carry their children in props.
 	walk(node.props?.children, own, overrides);
@@ -197,7 +200,6 @@ const viewProps = {
 	useSessionStatus: (selector) => selector({ get: () => void 0 }),
 	openTeammate: () => void 0,
 	loadModels: async () => [],
-	setMemberModel: async () => void 0,
 	runTeamCommand: async () => ({ kind: "success", text: "ok" }),
 	t: (key) => key
 };
@@ -210,17 +212,56 @@ try {
 check("the panel renders a member with no model selection", renderError === void 0, String(renderError));
 check("the render walk reached the roster rows", visited.includes("TeamAction") && visited.includes("TeamMemberRow"), JSON.stringify([...new Set(visited)]));
 check("the render walk reached the task cards", visited.includes("TaskCard"), JSON.stringify([...new Set(visited)]));
+
+// --- switching a model is a confirmed rebuild, not an in-place selection ---
+// A teammate's route is frozen into its subagent descriptor when its Session is
+// created, and the child Session itself answers `session/selectModel` with
+// `session/agent-busy: ... is owned by subagent routing`. The panel therefore
+// drives the Lead's `/team model` command — behind an explicit confirmation,
+// because a rebuild replaces the teammate's live Session.
+const commands = [];
+viewProps.runTeamCommand = async (sessionId, line) => {
+	commands.push({ sessionId, line });
+	return { kind: "success", text: "ok" };
+};
+const renderRow = (pending) => {
+	hosts.length = 0;
+	walk(slot.component(viewProps), viewProps, {
+		TeamAction: [true, null, [], true, false, {
+			name: "",
+			task: "",
+			model: "",
+			fork: false
+		}],
+		TeamMemberRow: [false, false, pending]
+	});
+};
+renderRow(null);
+const picker = hosts.find((element) => element.type === "select" && element.props["aria-label"] === "memberModel");
+check("a teammate row offers the model picker", picker !== void 0);
+commands.length = 0;
+picker.props.onChange({ target: { value: "zai/glm-5.3" } });
+await Promise.resolve();
+check("picking another model only asks for confirmation", commands.length === 0, JSON.stringify(commands));
+renderRow({ provider: "zai", model: "glm-5.3", label: "zai · glm-5.3" });
+check("the pending choice renders a rebuild confirmation", hosts.some((element) => element.type === "span" && String(element.props.children).includes("zai · glm-5.3")), JSON.stringify(hosts.filter((element) => element.type === "span").map((element) => element.props.children)));
+const confirm = hosts.find((element) => element.type === "button" && element.props.title === "memberModelConfirm");
+check("the confirmation offers a rebuild button", confirm !== void 0, JSON.stringify(hosts.filter((element) => element.type === "button").map((element) => element.props.title)));
+check("the confirmation can be cancelled", hosts.some((element) => element.type === "button" && element.props.title === "memberModelCancel"));
+confirm.props.onClick();
+for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
+check("confirming rebuilds through the Lead's /team model command", commands[0]?.line === "/team model 1 zai/glm-5.3" && commands[0]?.sessionId === leadId, JSON.stringify(commands));
 check("locale dictionaries registered", dictionary?.namespace === "agent-team" && dictionary?.dictionaries?.zh !== void 0 && dictionary?.dictionaries?.en !== void 0);
 
 const zhKeys = Object.keys(dictionary.dictionaries.zh).sort();
 const enKeys = Object.keys(dictionary.dictionaries.en).sort();
 check("zh/en key sets match", zhKeys.join("|") === enKeys.join("|"), `${zhKeys.length} vs ${enKeys.length}`);
-for (const key of ["addOpen", "addClose", "addName", "addTask", "addModel", "addModelDefault", "addFork", "addSubmit", "addBusy", "addMissing", "memberModel", "memberModelDefault", "memberRetire", "memberRetiring"]) {
+for (const key of ["addOpen", "addClose", "addName", "addTask", "addModel", "addModelDefault", "addFork", "addSubmit", "addBusy", "addMissing", "memberModel", "memberModelDefault", "memberModelRebuild", "memberModelConfirm", "memberModelSwitching", "memberModelCancel", "memberRetire", "memberRetiring"]) {
 	check(`dictionary has "${key}"`, zhKeys.includes(key) && enKeys.includes(key));
 }
 
 const actions = slot.definition.inject();
-check("panel actions exposed", ["openTeammate", "loadModels", "setMemberModel", "runTeamCommand"].every((name) => typeof actions[name] === "function"), JSON.stringify(Object.keys(actions)));
+check("panel actions exposed", ["openTeammate", "loadModels", "runTeamCommand"].every((name) => typeof actions[name] === "function"), JSON.stringify(Object.keys(actions)));
 
 // --- loadModels ---
 remote = {};
@@ -230,13 +271,8 @@ check("loadModels returns the catalog groups", groups?.[0]?.id === "openai", JSO
 remote.catalog = { ok: false, error: { code: "session/unavailable", message: "nope" } };
 check("loadModels degrades to an empty list", Array.isArray(await actions.loadModels()) && (await actions.loadModels()).length === 0);
 
-// --- setMemberModel ---
-remote = { selectResult: { ok: true, value: { selected: { provider: "zai", model: "glm-5.3" } } } };
-check("setMemberModel succeeds", (await actions.setMemberModel("m1", { provider: "zai", model: "glm-5.3" })) === void 0);
-check("setMemberModel targets the member session", remote.select?.sessionId === "m1" && remote.select?.provider === "zai" && remote.select?.model === "glm-5.3", JSON.stringify(remote.select));
-check("setMemberModel sends no stray keys", JSON.stringify(Object.keys(remote.select).sort()) === JSON.stringify(["model", "provider", "sessionId"]), JSON.stringify(Object.keys(remote.select)));
-remote.selectResult = { ok: false, error: { code: "session/model-unavailable", message: "bad route" } };
-check("setMemberModel reports the host error", (await actions.setMemberModel("m1", { provider: "zai", model: "x" })) === "session/model-unavailable: bad route");
+// --- the model picker no longer reaches for `session.selectModel` ---
+check("no panel action selects a model in place", actions.setMemberModel === void 0 && typeof actions.runTeamCommand === "function", JSON.stringify(Object.keys(actions)));
 
 // --- runTeamCommand ---
 remote = { executeResult: { ok: true, value: { commandId: "c1", result: { kind: "success", text: "ok" } } } };
@@ -274,7 +310,6 @@ const bareCtx = context({ get: () => void 0, remote: {} });
 mod.apply(bareCtx);
 const bare = slot.definition.inject();
 check("loadModels degrades when the remote session is absent", Array.isArray(await bare.loadModels()) && (await bare.loadModels()).length === 0);
-check("setMemberModel reports an absent remote session", typeof (await bare.setMemberModel("m1", { provider: "a", model: "b" })) === "string");
 check("runTeamCommand reports an absent remote namespace", (await bare.runTeamCommand("s1", "/team list"))?.kind === "error");
 
 // --- a re-apply must not be able to cost the header action ---
@@ -308,7 +343,7 @@ try { mod.apply(throwingCtx); } catch (error) { activationError = error; }
 check("a throwing service lookup cannot break plugin activation", activationError === void 0, String(activationError));
 check("a throwing service lookup still leaves the panel mounted", slot !== void 0);
 const guarded = slot?.definition.inject();
-check("a throwing service lookup degrades model selection", typeof (await guarded.setMemberModel("m1", { provider: "a", model: "b" })) === "string");
+check("a throwing service lookup degrades the model catalog", Array.isArray(await guarded.loadModels()) && (await guarded.loadModels()).length === 0);
 check("a throwing service lookup degrades roster commands", (await guarded.runTeamCommand("s1", "/team list"))?.kind === "error");
 
 console.log(failures.length === 0 ? "TEAM-UI-CHECK OK（失败 0 项）" : `TEAM-UI-CHECK FAILED（${failures.length} 项）`);

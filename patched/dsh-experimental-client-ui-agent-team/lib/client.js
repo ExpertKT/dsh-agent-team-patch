@@ -124,6 +124,7 @@ window.__ModuleLoader__.load({
 			const isLead = member.role === "lead";
 			const [retiring, setRetiring] = (0, react.useState)(false);
 			const [changing, setChanging] = (0, react.useState)(false);
+			const [pending, setPending] = (0, react.useState)(null);
 			const retire = async () => {
 				setRetiring(true);
 				try {
@@ -133,16 +134,29 @@ window.__ModuleLoader__.load({
 					setRetiring(false);
 				}
 			};
-			const changeModel = async (value) => {
-				if (value === "") return;
+			// A teammate's model is fixed when its subagent Session is created, so
+			// re-routing one retires it and rebuilds it under the same name. That loses
+			// the live conversation, so the pick waits for an explicit confirmation.
+			const changeModel = (value) => {
+				if (value === "" || value === routeKey(selection)) return;
 				const separator = value.indexOf("/");
+				const provider = value.slice(0, separator);
+				const model = value.slice(separator + 1);
+				setPending({
+					provider,
+					model,
+					label: `${provider} · ${model}`
+				});
+			};
+			const applyModelChange = async () => {
 				setChanging(true);
 				try {
-					const failure = await selectMemberModel(member.id, {
-						provider: value.slice(0, separator),
-						model: value.slice(separator + 1)
+					const failure = await selectMemberModel(member.name, {
+						provider: pending.provider,
+						model: pending.model
 					});
 					if (failure !== void 0) onError(failure);
+					else setPending(null);
 				} finally {
 					setChanging(false);
 				}
@@ -154,7 +168,7 @@ window.__ModuleLoader__.load({
 					gap: 6,
 					padding: "0 4px 6px"
 				},
-				children: [(0, react_jsx_runtime.jsxs)("select", {
+				children: [pending === null ? (0, react_jsx_runtime.jsxs)("select", {
 					"aria-label": t("memberModel"),
 					title: t("memberModel"),
 					value: routeKey(selection),
@@ -172,7 +186,18 @@ window.__ModuleLoader__.load({
 						value: choice.value,
 						children: choice.label
 					}, choice.value))]
-				}), (0, react_jsx_runtime.jsx)("button", {
+				}) : (0, react_jsx_runtime.jsx)("span", {
+					title: t("memberModelRebuild"),
+					style: {
+						...controlStyle,
+						flex: "1 1 auto",
+						minWidth: 0,
+						overflow: "hidden",
+						textOverflow: "ellipsis",
+						whiteSpace: "nowrap"
+					},
+					children: `${t("memberModelRebuild")} ${pending.label}`
+				}), pending === null ? (0, react_jsx_runtime.jsx)("button", {
 					type: "button",
 					disabled: retiring,
 					title: t("memberRetire"),
@@ -182,6 +207,32 @@ window.__ModuleLoader__.load({
 						cursor: "pointer"
 					},
 					children: retiring ? t("memberRetiring") : t("memberRetire")
+				}) : (0, react_jsx_runtime.jsxs)("span", {
+					style: {
+						display: "flex",
+						gap: 6
+					},
+					children: [(0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						disabled: changing,
+						title: t("memberModelConfirm"),
+						onClick: () => void applyModelChange(),
+						style: {
+							...controlStyle,
+							cursor: "pointer"
+						},
+						children: changing ? t("memberModelSwitching") : t("memberModelConfirm")
+					}), (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						disabled: changing,
+						title: t("memberModelCancel"),
+						onClick: () => setPending(null),
+						style: {
+							...controlStyle,
+							cursor: "pointer"
+						},
+						children: t("memberModelCancel")
+					})]
 				})]
 			});
 			return (0, react_jsx_runtime.jsxs)("div", {
@@ -318,7 +369,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 		/** Render the Team roster and read-only task board. */
-		function TeamAction({ sessionId, useSession, useSessions, useSessionStatus, openTeammate, loadModels, setMemberModel, runTeamCommand, t }) {
+		function TeamAction({ sessionId, useSession, useSessions, useSessionStatus, openTeammate, loadModels, runTeamCommand, t }) {
 			const [open, setOpen] = (0, react.useState)(false);
 			const [error, setError] = (0, react.useState)(null);
 			const [catalog, setCatalog] = (0, react.useState)([]);
@@ -417,9 +468,10 @@ window.__ModuleLoader__.load({
 				const result = await runTeamCommand(leadSessionId, `/team retire ${name}`);
 				return result.kind === "error" ? result.text : void 0;
 			};
-			const selectMemberModel = async (memberId, selection) => {
+			const selectMemberModel = async (name, selection) => {
 				try {
-					return await setMemberModel(memberId, selection);
+					const result = await runTeamCommand(leadSessionId, `/team model ${name} ${selection.provider}/${selection.model}`);
+					return result.kind === "error" ? result.text : void 0;
 				} catch (reason) {
 					return String(reason);
 				}
@@ -670,6 +722,10 @@ window.__ModuleLoader__.load({
 			addMissing: "需要名字和初始任务",
 			memberModel: "切换该队友的模型",
 			memberModelDefault: "默认模型",
+			memberModelRebuild: "换模型会重建该队友：",
+			memberModelConfirm: "重建",
+			memberModelSwitching: "重建中…",
+			memberModelCancel: "取消",
 			memberRetire: "退休",
 			memberRetiring: "退休中…",
 			"status.pending": "待处理",
@@ -712,6 +768,10 @@ window.__ModuleLoader__.load({
 			addMissing: "A name and an initial task are required",
 			memberModel: "Change this teammate's model",
 			memberModelDefault: "Default model",
+			memberModelRebuild: "Rebuild this teammate on:",
+			memberModelConfirm: "Rebuild",
+			memberModelSwitching: "Rebuilding…",
+			memberModelCancel: "Cancel",
 			memberRetire: "Retire",
 			memberRetiring: "Retiring…",
 			"status.pending": "Pending",
@@ -823,16 +883,6 @@ window.__ModuleLoader__.load({
 				if (session === void 0) return [];
 				const result = await session.modelCatalog();
 				return result.ok ? result.value.groups : [];
-			},
-			async setMemberModel(memberId, selection) {
-				const session = remoteNamespace("session");
-				if (session === void 0) return "agent-team: model selection is unavailable in this composition";
-				const result = await session.selectModel({
-					sessionId: memberId,
-					provider: selection.provider,
-					model: selection.model
-				});
-				return result.ok ? void 0 : `${result.error.code}: ${result.error.message}`;
 			},
 			async runTeamCommand(sessionId, line) {
 				const commands = remoteNamespace("commands");

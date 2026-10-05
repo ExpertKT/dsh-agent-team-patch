@@ -3,9 +3,9 @@
 //
 // `lib/panel/client.js` is a build artifact: it is `patched/dsh-experimental-client-ui-agent-team/lib/client.js`
 // (the panel this repository adds to DSH Agent Teams) published under this package's own
-// module id, with the retire control removed (retirement lives in the hot-patch half of
-// this repository until upstream accepts it) and the add command pointed at this
-// package's own `/teammates` command.
+// module id, with the roster controls row removed (retirement and re-routing live in the
+// hot-patch half of this repository until upstream accepts them) and the add command
+// pointed at this package's own `/teammates` command.
 //
 //   node tools/build-plugin.mjs            # rewrite lib/panel/client.js
 //   node tools/build-plugin.mjs --check    # fail when the artifact is out of date
@@ -18,29 +18,18 @@ const SOURCE = join(HERE, 'patched', 'dsh-experimental-client-ui-agent-team', 'l
 const TARGET = join(HERE, 'lib', 'panel', 'client.js');
 const PACKAGE = 'dsh-agent-team-panel';
 
-/** Index of the `}` that closes the `{` at `open`. */
-function matchBrace(text, open) {
-	let depth = 0;
-	for (let index = open; index < text.length; index += 1) {
-		const char = text[index];
-		if (char === "{") depth += 1;
-		else if (char === "}") {
-			depth -= 1;
-			if (depth === 0) return index;
-		}
-	}
-	throw new Error(`unbalanced braces from offset ${open}`);
-}
-
-/** Remove the `<button …retire…>` element (and the comma before it) from the controls row. */
-function withoutRetireButton(text) {
-	const marker = text.indexOf('title: t("memberRetire")');
-	if (marker < 0) throw new Error('the retire button marker was not found');
-	const open = text.lastIndexOf(', (0, react_jsx_runtime.jsx)("button", {', marker);
-	if (open < 0) throw new Error('the retire button element start was not found');
-	const brace = text.indexOf("{", open);
-	const end = matchBrace(text, brace) + 2; // `}` then `)`
-	return `${text.slice(0, open)}${text.slice(end)}`;
+/**
+ * Remove the roster controls row: this half cannot retire a member (the shipped
+ * runtime has no `retired` phase) and cannot re-route one (a teammate's model is
+ * frozen into its subagent descriptor, so switching it rebuilds the member). The
+ * plugin offers model choice where the shipped runtime supports it — at creation.
+ */
+function withoutControlsRow(text) {
+	const start = text.indexOf('const controls = isLead ? false : (0, react_jsx_runtime.jsxs)("div", {');
+	if (start < 0) throw new Error('the controls row marker was not found');
+	const next = text.indexOf('return (0, react_jsx_runtime.jsxs)("div", {', start);
+	if (next < 0) throw new Error('the statement after the controls row was not found');
+	return `${text.slice(0, start)}const controls = false;\n\t\t\t${text.slice(next)}`;
 }
 
 function transform(source) {
@@ -61,8 +50,8 @@ function transform(source) {
 		'stylesheet id'
 	);
 	replaceOnce('/team add ${name}', '/teammates add ${name}', 'add command');
-	text = withoutRetireButton(text);
-	if (text.includes('title: t("memberRetire")')) throw new Error('the retire control survived the rewrite');
+	text = withoutControlsRow(text);
+	if (!text.includes('const controls = false;')) throw new Error('the controls row survived the rewrite');
 	if (!text.includes('memberRetire:')) throw new Error('the locale dictionary was damaged by the rewrite');
 	return `${text}\n`;
 }
@@ -83,4 +72,4 @@ await writeFile(TARGET, artifact);
 console.log(`wrote lib/panel/client.js (${artifact.length} B) from patched/dsh-experimental-client-ui-agent-team/lib/client.js`);
 console.log('  - module id  ->', PACKAGE);
 console.log('  - add command -> /teammates add <name> [--fork] [--model p/m] -- <prompt>');
-console.log('  - retire control removed (it belongs to the hot-patch half until upstream accepts it)');
+console.log('  - retire and re-route controls removed (they belong to the hot-patch half until upstream accepts them)');

@@ -23,6 +23,7 @@ check("exports apply/inject/Config", typeof plugin.apply === "function" && Array
 // --- capture the registered command through a scripted client-shaped Context ---
 let registered;
 const spawnCalls = [];
+const retiredCalls = [];
 let spawnError = void 0;
 const ctx = {
 	agents: { list: () => [] },
@@ -35,15 +36,18 @@ const ctx = {
 		tryMembership: () => void 0,
 		listMembers: () => [
 			{ name: "lead", role: "lead", status: "active", model: "gpt-5.6-luna" },
-			{ name: "b1", role: "teammate", status: "running", model: "zai/glm-5.3" },
-			{ name: "b2", role: "teammate", status: "inactive", model: "gpt-5.6-luna" }
+			{ id: "child-b1", name: "b1", role: "teammate", status: "running", model: "zai/glm-5.3", description: "修登录", context: "fresh" },
+			{ id: "child-b2", name: "b2", role: "teammate", status: "inactive", model: "gpt-5.6-luna", description: "看日志", context: "fork" }
 		],
 		spawnTeammate: async (agent, request) => {
 			spawnCalls.push(request);
 			if (spawnError !== void 0) throw spawnError;
 			return { member: { name: request.name, model: request.agentOptions?.model ?? "lead-route" } };
 		},
-		retireTeammate: async (agent, name) => ({ previousStatus: name === "b1" ? "inactive" : "running" })
+		retireTeammate: async (agent, name) => {
+			retiredCalls.push(name);
+			return { previousStatus: name === "b1" ? "inactive" : "running" };
+		}
 	}
 };
 const dispose = plugin.apply(ctx, {});
@@ -84,6 +88,39 @@ spawnCalls.length = 0;
 await run("add b4 --fork -- 继承上下文的任务");
 check("--fork selects the fork provider", spawnCalls[0]?.provider === "fork" && spawnCalls[0]?.context === "fork", JSON.stringify(spawnCalls[0]?.provider));
 check("omitting --model omits agentOptions", !("agentOptions" in spawnCalls[0]), JSON.stringify(Object.keys(spawnCalls[0] ?? {})));
+
+// --- re-route: a teammate's model is frozen in its descriptor, so switching it
+// --- retires the member and rebuilds it under the same name on the new route ---
+spawnCalls.length = 0;
+retiredCalls.length = 0;
+const rerouted = await run("model b1 openai/gpt-5.6-sol");
+check("/team model succeeds", rerouted.kind === "success", JSON.stringify(rerouted));
+check("the old member is retired first", retiredCalls[0] === "b1" && retiredCalls.length === 1, JSON.stringify(retiredCalls));
+check("the rebuild reuses the name and description", spawnCalls[0]?.name === "b1" && spawnCalls[0]?.description === "修登录", JSON.stringify(spawnCalls[0]));
+check("the rebuild carries the new route", spawnCalls[0]?.agentOptions?.provider === "openai" && spawnCalls[0]?.agentOptions?.model === "gpt-5.6-sol", JSON.stringify(spawnCalls[0]?.agentOptions));
+check("the rebuild keeps the member's context mode", spawnCalls[0]?.context === "fresh" && spawnCalls[0]?.provider === "spawn", JSON.stringify([spawnCalls[0]?.context, spawnCalls[0]?.provider]));
+check("the rebuild keeps the teammate reminder", spawnCalls[0]?.prompt?.[0]?.text?.includes('You are teammate "b1"'), JSON.stringify(spawnCalls[0]?.prompt?.[0]));
+check("the rebuild tells the teammate its Session is new", spawnCalls[0]?.prompt?.[1]?.text?.includes("openai/gpt-5.6-sol") && spawnCalls[0]?.prompt?.[1]?.text?.includes("child-b1"), JSON.stringify(spawnCalls[0]?.prompt?.[1]?.text));
+check("the rebuild passes the caller signal", spawnCalls[0]?.signal !== void 0);
+check("the success text names the route and the retired Session", rerouted.text.includes("openai/gpt-5.6-sol") && rerouted.text.includes("child-b1"), rerouted.text);
+
+// a fork teammate is rebuilt through the fork provider, keeping its context mode
+spawnCalls.length = 0;
+await run("model b2 zai/glm-5.3");
+check("a fork teammate is rebuilt as a fork", spawnCalls[0]?.context === "fork" && spawnCalls[0]?.provider === "fork", JSON.stringify([spawnCalls[0]?.context, spawnCalls[0]?.provider]));
+
+for (const [input, needle] of [
+	["model b1", "usage: /team model <name> <provider>/<model>"],
+	["model b1 bogus", "<provider>/<model>"],
+	["model b1 a/b extra", "usage: /team model"],
+	["model nope openai/x", "is not in this Team"],
+	["model lead openai/x", "Team Lead"],
+	["model b1 openai/x -- x", "usage: /team model"]
+]) {
+	const result = await run(input);
+	check(`/team ${input} is rejected`, result.kind === "error" && result.text.includes(needle), JSON.stringify(result));
+}
+check("a rejected re-route never touches the roster", retiredCalls[1] === "b2" && retiredCalls.length === 2, JSON.stringify(retiredCalls));
 
 // --- retire ---
 const retired = await run("retire b1");

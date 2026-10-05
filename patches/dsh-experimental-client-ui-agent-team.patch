@@ -1,5 +1,5 @@
 diff --git a/a/lib/client.js b/b/lib/client.js
-index 56cf8e1..4ef77a8 100644
+index 56cf8e1..9235bb2 100644
 --- a/a/lib/client.js
 +++ b/b/lib/client.js
 @@ -67,6 +67,8 @@ window.__ModuleLoader__.load({
@@ -20,7 +20,7 @@ index 56cf8e1..4ef77a8 100644
  			}
  		}
  		function taskDotState(task) {
-@@ -85,16 +89,109 @@ window.__ModuleLoader__.load({
+@@ -85,16 +89,160 @@ window.__ModuleLoader__.load({
  				case "deleted": return "idle";
  			}
  		}
@@ -63,6 +63,7 @@ index 56cf8e1..4ef77a8 100644
 +			const isLead = member.role === "lead";
 +			const [retiring, setRetiring] = (0, react.useState)(false);
 +			const [changing, setChanging] = (0, react.useState)(false);
++			const [pending, setPending] = (0, react.useState)(null);
 +			const retire = async () => {
 +				setRetiring(true);
 +				try {
@@ -72,16 +73,29 @@ index 56cf8e1..4ef77a8 100644
 +					setRetiring(false);
 +				}
 +			};
-+			const changeModel = async (value) => {
-+				if (value === "") return;
++			// A teammate's model is fixed when its subagent Session is created, so
++			// re-routing one retires it and rebuilds it under the same name. That loses
++			// the live conversation, so the pick waits for an explicit confirmation.
++			const changeModel = (value) => {
++				if (value === "" || value === routeKey(selection)) return;
 +				const separator = value.indexOf("/");
++				const provider = value.slice(0, separator);
++				const model = value.slice(separator + 1);
++				setPending({
++					provider,
++					model,
++					label: `${provider} · ${model}`
++				});
++			};
++			const applyModelChange = async () => {
 +				setChanging(true);
 +				try {
-+					const failure = await selectMemberModel(member.id, {
-+						provider: value.slice(0, separator),
-+						model: value.slice(separator + 1)
++					const failure = await selectMemberModel(member.name, {
++						provider: pending.provider,
++						model: pending.model
 +					});
 +					if (failure !== void 0) onError(failure);
++					else setPending(null);
 +				} finally {
 +					setChanging(false);
 +				}
@@ -93,7 +107,7 @@ index 56cf8e1..4ef77a8 100644
 +					gap: 6,
 +					padding: "0 4px 6px"
 +				},
-+				children: [(0, react_jsx_runtime.jsxs)("select", {
++				children: [pending === null ? (0, react_jsx_runtime.jsxs)("select", {
 +					"aria-label": t("memberModel"),
 +					title: t("memberModel"),
 +					value: routeKey(selection),
@@ -111,7 +125,18 @@ index 56cf8e1..4ef77a8 100644
 +						value: choice.value,
 +						children: choice.label
 +					}, choice.value))]
-+				}), (0, react_jsx_runtime.jsx)("button", {
++				}) : (0, react_jsx_runtime.jsx)("span", {
++					title: t("memberModelRebuild"),
++					style: {
++						...controlStyle,
++						flex: "1 1 auto",
++						minWidth: 0,
++						overflow: "hidden",
++						textOverflow: "ellipsis",
++						whiteSpace: "nowrap"
++					},
++					children: `${t("memberModelRebuild")} ${pending.label}`
++				}), pending === null ? (0, react_jsx_runtime.jsx)("button", {
 +					type: "button",
 +					disabled: retiring,
 +					title: t("memberRetire"),
@@ -121,6 +146,32 @@ index 56cf8e1..4ef77a8 100644
 +						cursor: "pointer"
 +					},
 +					children: retiring ? t("memberRetiring") : t("memberRetire")
++				}) : (0, react_jsx_runtime.jsxs)("span", {
++					style: {
++						display: "flex",
++						gap: 6
++					},
++					children: [(0, react_jsx_runtime.jsx)("button", {
++						type: "button",
++						disabled: changing,
++						title: t("memberModelConfirm"),
++						onClick: () => void applyModelChange(),
++						style: {
++							...controlStyle,
++							cursor: "pointer"
++						},
++						children: changing ? t("memberModelSwitching") : t("memberModelConfirm")
++					}), (0, react_jsx_runtime.jsx)("button", {
++						type: "button",
++						disabled: changing,
++						title: t("memberModelCancel"),
++						onClick: () => setPending(null),
++						style: {
++							...controlStyle,
++							cursor: "pointer"
++						},
++						children: t("memberModelCancel")
++					})]
 +				})]
 +			});
 +			return (0, react_jsx_runtime.jsxs)("div", {
@@ -134,7 +185,7 @@ index 56cf8e1..4ef77a8 100644
  				side: "bottom",
  				gap: 4,
  				disabled: inert,
-@@ -140,6 +237,7 @@ window.__ModuleLoader__.load({
+@@ -140,6 +288,7 @@ window.__ModuleLoader__.load({
  						]
  					})]
  				})
@@ -142,12 +193,12 @@ index 56cf8e1..4ef77a8 100644
  			});
  		}
  		/** Task card with a two-line description clamp expanded from a toggle in the meta row. */
-@@ -220,9 +318,18 @@ window.__ModuleLoader__.load({
+@@ -220,9 +369,18 @@ window.__ModuleLoader__.load({
  			});
  		}
  		/** Render the Team roster and read-only task board. */
 -		function TeamAction({ sessionId, useSession, useSessions, useSessionStatus, openTeammate, t }) {
-+		function TeamAction({ sessionId, useSession, useSessions, useSessionStatus, openTeammate, loadModels, setMemberModel, runTeamCommand, t }) {
++		function TeamAction({ sessionId, useSession, useSessions, useSessionStatus, openTeammate, loadModels, runTeamCommand, t }) {
  			const [open, setOpen] = (0, react.useState)(false);
  			const [error, setError] = (0, react.useState)(null);
 +			const [catalog, setCatalog] = (0, react.useState)([]);
@@ -162,7 +213,7 @@ index 56cf8e1..4ef77a8 100644
  			const rootRef = (0, react.useRef)(null);
  			const triggerRef = (0, react.useRef)(null);
  			const triggerLabelRef = (0, react.useRef)(null);
-@@ -296,6 +403,136 @@ window.__ModuleLoader__.load({
+@@ -296,6 +454,137 @@ window.__ModuleLoader__.load({
  					document.removeEventListener("keydown", dismiss);
  				};
  			}, [open]);
@@ -180,9 +231,10 @@ index 56cf8e1..4ef77a8 100644
 +				const result = await runTeamCommand(leadSessionId, `/team retire ${name}`);
 +				return result.kind === "error" ? result.text : void 0;
 +			};
-+			const selectMemberModel = async (memberId, selection) => {
++			const selectMemberModel = async (name, selection) => {
 +				try {
-+					return await setMemberModel(memberId, selection);
++					const result = await runTeamCommand(leadSessionId, `/team model ${name} ${selection.provider}/${selection.model}`);
++					return result.kind === "error" ? result.text : void 0;
 +				} catch (reason) {
 +					return String(reason);
 +				}
@@ -299,7 +351,7 @@ index 56cf8e1..4ef77a8 100644
  			const compact = team !== void 0 && team.members.length === 1 && team.tasks.length === 0;
  			return (0, react_jsx_runtime.jsxs)("div", {
  				ref: rootRef,
-@@ -366,10 +603,13 @@ window.__ModuleLoader__.load({
+@@ -366,10 +655,13 @@ window.__ModuleLoader__.load({
  										useSessions,
  										useSessionStatus,
  										openTeammate,
@@ -314,7 +366,7 @@ index 56cf8e1..4ef77a8 100644
  								(0, react_jsx_runtime.jsx)("section", { children: team.tasks.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
  									className: TeamAction_module_css_default.emptyNotice,
  									children: t("empty")
-@@ -418,6 +658,20 @@ window.__ModuleLoader__.load({
+@@ -418,6 +710,24 @@ window.__ModuleLoader__.load({
  			"memberStatus.inactive": "未运行",
  			"memberStatus.provisioning": "准备中",
  			"memberStatus.failed": "失败",
@@ -330,12 +382,16 @@ index 56cf8e1..4ef77a8 100644
 +			addMissing: "需要名字和初始任务",
 +			memberModel: "切换该队友的模型",
 +			memberModelDefault: "默认模型",
++			memberModelRebuild: "换模型会重建该队友：",
++			memberModelConfirm: "重建",
++			memberModelSwitching: "重建中…",
++			memberModelCancel: "取消",
 +			memberRetire: "退休",
 +			memberRetiring: "退休中…",
  			"status.pending": "待处理",
  			"status.in_progress": "进行中",
  			"status.completed": "已完成"
-@@ -446,14 +700,68 @@ window.__ModuleLoader__.load({
+@@ -446,14 +756,72 @@ window.__ModuleLoader__.load({
  			"memberStatus.inactive": "Inactive",
  			"memberStatus.provisioning": "Provisioning",
  			"memberStatus.failed": "Failed",
@@ -351,6 +407,10 @@ index 56cf8e1..4ef77a8 100644
 +			addMissing: "A name and an initial task are required",
 +			memberModel: "Change this teammate's model",
 +			memberModelDefault: "Default model",
++			memberModelRebuild: "Rebuild this teammate on:",
++			memberModelConfirm: "Rebuild",
++			memberModelSwitching: "Rebuilding…",
++			memberModelCancel: "Cancel",
 +			memberRetire: "Retire",
 +			memberRetiring: "Retiring…",
  			"status.pending": "Pending",
@@ -405,7 +465,7 @@ index 56cf8e1..4ef77a8 100644
  		const inject = [
  			"sessions",
  			"uiWorkspace",
-@@ -467,14 +775,36 @@ window.__ModuleLoader__.load({
+@@ -467,14 +835,36 @@ window.__ModuleLoader__.load({
  		* @param ctx - Client Context carrying the injected navigation, locale, slot, and Session services.
  		*/
  		function registerAgentTeamUi(ctx) {
@@ -446,7 +506,7 @@ index 56cf8e1..4ef77a8 100644
  			const actions = { openTeammate(sessionId, childSessionId) {
  				const parentSessionId = leadSessionId(sessionId);
  				if ((sessions.retainInfo(sessionId).getSnapshot().retainedBy.mainView ?? 0) === 0) return;
-@@ -487,6 +817,39 @@ window.__ModuleLoader__.load({
+@@ -487,6 +877,29 @@ window.__ModuleLoader__.load({
  					childSessionId,
  					mode: "continuable"
  				});
@@ -456,16 +516,6 @@ index 56cf8e1..4ef77a8 100644
 +				if (session === void 0) return [];
 +				const result = await session.modelCatalog();
 +				return result.ok ? result.value.groups : [];
-+			},
-+			async setMemberModel(memberId, selection) {
-+				const session = remoteNamespace("session");
-+				if (session === void 0) return "agent-team: model selection is unavailable in this composition";
-+				const result = await session.selectModel({
-+					sessionId: memberId,
-+					provider: selection.provider,
-+					model: selection.model
-+				});
-+				return result.ok ? void 0 : `${result.error.code}: ${result.error.message}`;
 +			},
 +			async runTeamCommand(sessionId, line) {
 +				const commands = remoteNamespace("commands");
@@ -486,7 +536,7 @@ index 56cf8e1..4ef77a8 100644
  			} };
  			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
  				name: "conversation.session.header.actions",
-@@ -494,7 +857,17 @@ window.__ModuleLoader__.load({
+@@ -494,7 +907,17 @@ window.__ModuleLoader__.load({
  				order: -20,
  				locale: NS,
  				inject: () => actions

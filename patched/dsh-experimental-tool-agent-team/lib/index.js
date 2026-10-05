@@ -570,7 +570,8 @@ function install(agent, ctx, config) {
 }
 /**
 * Parse one `/team` line. Grammar:
-* `list` | `retire <name>` | `add <name> [--fork] [--model <provider>/<model>] -- <prompt>`.
+* `list` | `retire <name>` | `model <name> <provider>/<model>` |
+* `add <name> [--fork] [--model <provider>/<model>] -- <prompt>`.
 * @param rawInput - text after the command name.
 * @returns a parsed request, or `{ error }` with usage text.
 */
@@ -582,12 +583,18 @@ function parseTeamCommand(rawInput) {
 	const tokens = (separates === null ? raw : raw.slice(0, separates.index)).split(/\s+/u).filter((token) => token !== "");
 	const addUsage = 'usage: /team add <name> [--fork] [--model <provider>/<model>] -- <prompt>';
 	if (tokens.length === 0 || tokens[0] === "help")
-		return { error: `usage: /team list | /team retire <name> | ${addUsage}` };
+		return { error: `usage: /team list | /team retire <name> | /team model <name> <provider>/<model> | ${addUsage}` };
 	const [action, ...rest] = tokens;
 	if (action === "list") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team list" };
 	if (action === "retire")
 		return separates === null && rest.length === 1 ? { action, name: rest[0] } : { error: "usage: /team retire <name>" };
-	if (action !== "add") return { error: `unknown Team subcommand "${action}"; use list, add, or retire` };
+	if (action === "model") {
+		const usage = "usage: /team model <name> <provider>/<model>";
+		if (separates !== null || rest.length !== 2) return { error: usage };
+		const route = parseModelRoute(rest[1]);
+		return route === void 0 ? { error: `${usage} — got "${rest[1]}"` } : { action, name: rest[0], agentOptions: route };
+	}
+	if (action !== "add") return { error: `unknown Team subcommand "${action}"; use list, add, retire, or model` };
 	const parsed = { action, context: "fresh" };
 	for (let index = 0; index < rest.length; index += 1) {
 		const token = rest[index];
@@ -627,6 +634,34 @@ async function executeTeamCommand(ctx, providers, invocation) {
 		if (parsed.action === "retire") {
 			const { previousStatus } = await ctx.agentTeams.retireTeammate(agent, parsed.name);
 			return { kind: "success", text: `retired teammate "${parsed.name}" (was ${previousStatus})` };
+		}
+		if (parsed.action === "model") {
+			// A teammate's model is frozen into its subagent descriptor at creation and
+			// the child Session is owned by subagent routing, so the only supported way
+			// to re-route one is to retire it and materialize it again under the same
+			// name with the new route.
+			const target = ctx.agentTeams.listMembers(agent).find((member) => member.name === parsed.name);
+			if (target === void 0) return { kind: "error", text: `teammate "${parsed.name}" is not in this Team` };
+			if (target.role === "lead") return { kind: "error", text: `"${parsed.name}" is the Team Lead; pick a teammate` };
+			const route = `${parsed.agentOptions.provider}/${parsed.agentOptions.model}`;
+			const { previousStatus } = await ctx.agentTeams.retireTeammate(agent, parsed.name);
+			const fork = target.context === "fork";
+			const { member } = await ctx.agentTeams.spawnTeammate(agent, {
+				name: parsed.name,
+				description: target.description ?? `Teammate ${parsed.name}`,
+				prompt: [{
+					type: "text",
+					text: teammateReminder(parsed.name)
+				}, {
+					type: "text",
+					text: `The Team Lead re-routed you to ${route}, so this teammate Session was created fresh. Your previous Session (${target.id}, ${previousStatus}) is retired and its history is not in your context. Call team_task_list and wait_agent to pick your work back up, and send_message to the Lead if you need context it has not sent yet.`
+				}],
+				context: fork ? "fork" : "fresh",
+				provider: fork ? providers.forkProvider : providers.freshProvider,
+				agentOptions: parsed.agentOptions,
+				signal: invocation.signal
+			});
+			return { kind: "success", text: `rebuilt teammate "${member.name}" on ${route} (was ${target.model ?? "the Lead's model"}); previous Session ${target.id} retired` };
 		}
 		const context = parsed.context;
 		const { member } = await ctx.agentTeams.spawnTeammate(agent, {
@@ -676,8 +711,8 @@ function apply(ctx, config = {}) {
 		commandCtx.commands.register({
 			definitionId: CommandDefinitionId("@deepseek-ai/dsh-experimental-tool-agent-team"),
 			name: "team",
-			description: "Manage Agent Team members: list the roster, add a teammate, or retire one.",
-			input: { hint: "list | retire <name> | add <name> [--fork] [--model <provider>/<model>] -- <prompt>" },
+			description: "Manage Agent Team members: list the roster, add a teammate, retire one, or re-route one to another model.",
+			input: { hint: "list | retire <name> | model <name> <provider>/<model> | add <name> [--fork] [--model <provider>/<model>] -- <prompt>" },
 			handler: (invocation) => executeTeamCommand(ctx, resolved, invocation)
 		});
 	});

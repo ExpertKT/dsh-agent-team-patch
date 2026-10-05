@@ -95,8 +95,9 @@ maxMembers: 8
 
 ### 现象
 
-1. `spawn_teammate` **没有** `provider` / `model` / `reasoningEffort` 参数；想让队友跑某个模型，唯一办法是先把 **Lead 自己的模型芯片**切过去再 spawn。
-2. 子会话跑起来之后**没有任何**「给这个队友换模型」的接口。
+1. ~~`spawn_teammate` **没有** `provider` / `model` / `reasoningEffort` 参数~~ —— 2026-10-05 已在上游包上热补：`spawn_teammate` 加可选 `model: "<provider>/<model>"`（本仓库的 `patches/dsh-experimental-tool-agent-team.patch` 也含此项）。但 `reasoningEffort` 仍不可指定。
+2. 子会话跑起来之后**没有任何**「给这个队友换模型」的接口；客户端若贸然对被派生的子会话调模型选择，会撞上这条**误导性错误**：
+   `session/agent-busy: session "<childId>" is owned by subagent routing`（`{reason: "use subagent delivery for this child session"}`）。见下方「续查」。
 3. `list_agents()` 返回的 `model` 对**已停手（inactive）**的成员会变成 Lead 当前的模型 —— 用它核对「队友跑在哪个模型上」会得到错误结论。
 
 ### 根因
@@ -120,17 +121,25 @@ maxMembers: 8
 
 ### 证据强度（请按此定级）
 
-- **硬证据（代码）**：`spawn_teammate` 的参数列表里确实没有模型参数；`:436-464` 的 `?? root.options.model` 回退确实存在。
+- **硬证据（代码）**：上游 `spawn_teammate` 的参数列表里确实没有模型参数（`model` 是 2026-10-05 由本仓库的热补丁补上的）；`:436-464` 的 `?? root.options.model` 回退确实存在，且由 `dsh-subagent\lib\types\descriptor.js` 的 `events.find` 折叠算法坐实「模型创建即冻结」。
 - **较弱**：`checks/who-runs-what.mjs` 扫会话记录 `modelSelection.val.lastUsed`，历史输出显示「Lead 是 luna 时建的三个队友都是 `gpt-5.6-luna`，Lead 是 deepseek 时建的 `ui-luna` 是 `deepseek-flash`」，**指向**「子会话继承创建者当时的模型」。这是**非受控观测**（变量没控住），还没有排除「跟 profile 的 `agent-default-model`」。
 - **复现建议**：做一次受控实验 —— 固定 profile 的 `agent-default-model` 为 A，把 Lead 切到 B，spawn 一个队友，读该队友会话记录的 `modelSelection.val.lastUsed`；A≠B 时结论才干净。
 
+### 续查（2026-10-05）：为什么「事后换模型」在架构上做不到
+
+- **子会话的模型在创建那一刻就被冻结进 descriptor**：`dsh-subagent\lib\types\descriptor.js` 的 `foldSubagentDescriptor(events)` 用 `events.find(...)` 取**第一条** descriptor 事件（注释明说 descriptor 是 composition 的权威记录、不允许被改写），版本 `SUBAGENT_DESCRIPTOR_VERSION = 3`。所以不存在「改一个字段让子会话换模型」的入口。
+- **客户端那条路是死路**：对子会话调 `remote.session.selectModel` 会被 `dsh-api-session-controller\lib\types\agent.js` 的子会话守卫拒掉 —— `hasApiSessionSubagentOwner` 对 `session.header.origin === "subagent"` 一律返回 true，`apiSessionSubagentOwnershipError` 抛上面的 `agent-busy`。
+- **热重建会丢上下文**：`materializeTracked`（`dsh-subagent\lib\index.js:1064-1091`）走 `ownerCtx.agents.resume({resumeSessionId, parentAgent, agentOptions, signal, setup})`，`setup` 只 append descriptor + `applyChildComposition` —— **没有 model selection 投影参与**。子代理服务面（resolveMaxDepth / startContinuable / sendMessage / interrupt / drain* / listChildren / listDescendants / prompt / registerProvider / getProvider / list / start）也**没有任何**改模型 API。
+- 因此本仓库现在的实现是**退休 + 同名重建**：`/team model <name> <provider>/<model>`（面板下拉里选完先确认）—— 新子会话拿到新路由，旧会话作为只读历史留下。这能绕过限制，**但代价是那一轮的上下文不继承**，用户必须挑「手上活已交付」的空档换模型。
+
 ### 建议的上游修法
 
-1. `spawn_teammate` 增加 `provider` / `model` / `reasoningEffort` 参数；
-2. 增加 `set_teammate_model(target, provider, model)`（`update_goal` 风格），并明确它是只对新建子会话生效、还是能热生效；
+1. ~~`spawn_teammate` 增加 `provider` / `model` / `reasoningEffort` 参数~~（`model` 已加；`reasoningEffort` 仍缺）；
+2. 增加 `set_teammate_model(target, provider, model)`（`update_goal` 风格），并明确它是只对新建子会话生效、还是能热生效；**若架构上只能「重建」，请提供一等入口**（例如 `respawn(target, {agentOptions})`：自动退休旧会话、用新路由重建、把旧会话里已交付的结论摘要带过去），而不是让每个使用方自己拼「退休 + 同名重建」；
 3. **无论能否热生效，返回值里回显实际生效的模型**；
 4. `list_agents` 对 inactive 成员要么回显**最后一次记录的**模型，要么显式 `null`/`unknown`，**不要回退成 Lead 的模型**；
-5. 若确定「继承创建者」是设计，请写进文档 —— 现在它只能靠读代码和翻会话记录才知道。
+5. 让 `selectModel` 在子会话上给出**可理解的**错误（现在这条 `owned by subagent routing` 会被当成基础设施故障，而不是「这个对象不支持这个操作」）；
+6. 若确定「继承创建者」是设计，请写进文档 —— 现在它只能靠读代码和翻会话记录才知道。
 
 ---
 

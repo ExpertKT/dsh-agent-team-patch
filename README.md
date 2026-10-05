@@ -3,7 +3,7 @@
 给 DSH 桌面版的 Agent Teams 补三件事：
 
 1. **队友能退休** —— 退场后不再占席位、名字可复用，但 durable 名册 / 任务归属 / 消息历史保留；
-2. **每个队友单独选模型** —— 面板里每人一行下拉，加人时也能指定 `provider/model`；
+2. **每个队友单独选模型** —— 面板里每人一行下拉，加人时也能指定 `provider/model`（`/team add … --model p/m`）。队友**已经在跑之后换模型 = 退休 + 同名重建**：新会话用新模型，旧会话作为只读历史留下 —— 子会话的模型在创建时就被写进 descriptor，事后改不了（详见 `ISSUE.md` 的 Issue B）；
 3. **会话标题栏的团队面板** —— 名册（状态、当前模型、退休按钮）、任务板、加人表单（名字 / 任务 / 模型 / `--fork`）。
 
 适用范围：DSH 桌面版，`@deepseek-ai/*` 版本必须是 **`0.2.0-rc.2`**。
@@ -23,9 +23,9 @@ dsh plugin add https://github.com/ExpertKT/dsh-agent-team-patch
 # 加完在插件列表里启用它（启用会把它写进 profile 的 dsh.profile.bundles），然后重启 DSH
 ```
 
-它给的是**会话标题栏的团队面板**：看当前小队名册、加队友（名字 / 任务 / `--fork` / 可选模型）、给每个队友换模型。前提是你的 DSH 里已有官方那三个实验包（Agent Teams）。
+它给的是**会话标题栏的团队面板**：看当前小队名册（含每人当前模型）、加队友（名字 / 任务 / `--fork` / 可选模型）。前提是你的 DSH 里已有官方那三个实验包（Agent Teams）。
 
-**这一半不含「退休」**：退休要改官方名册的状态机，那是下面热补丁那一半的事（也在向上游提 issue），所以这个面板里没有退休按钮。
+**这一半不含「退休」，也不含「给已有队友换模型」**：两者都要改官方名册的状态机（退休 / 同名重建），那是下面热补丁那一半的事（也在向上游提 issue），所以这个面板里没有退休按钮，模型只能在**加人时**选。
 
 改动就是四个文件：`package.json`、`cordis.patch.yml`（关掉官方同名 UI、插入本包）、`lib/panel/index.js`（宿主侧注册 `/teammates` 命令）、`lib/panel/client.js`（浏览器侧面板，由 `tools/build-plugin.mjs` 从 `patched/` 生成）。
 
@@ -82,8 +82,8 @@ node apply.mjs --revert    # 还原 7 个文件 + profile 里加的那一行
 |---|---|---|
 | `dsh-experimental-agent-team` | `lib/index.js` | 相位加 `retired`；`active\|failed → retired` 守卫；席位只数非 retired；名字唯一性只在在役范围；名册/投影跳过退休成员；Lead-only `retire()`；`spawnAdmitted` 转发 `agentOptions`（选模型） |
 | 同上 | `lib/invariant.js`、`lib/types/index.js`、`lib/types/projection.js`、`lib/types/roster.js` | 同源拷贝，为语义一致一起改（发行包内无 importer，但 `exports` 里有） |
-| `dsh-experimental-tool-agent-team` | `lib/index.js` | 注册 `retire_teammate`；`spawn_teammate` 加可选 `model`（`provider/model`）；新增 `/team` 命令（`list \| retire <name> \| add <name> [--fork] [--model p/m] -- <prompt>`） |
-| `dsh-experimental-client-ui-agent-team` | `lib/client.js` | 团队面板（名册 / 任务卡 / 加人表单 / 每成员模型下拉 / 退休按钮）；Remote 命名空间统一走 `ctx.get`；面板外包错误边界 |
+| `dsh-experimental-tool-agent-team` | `lib/index.js` | 注册 `retire_teammate`；`spawn_teammate` 加可选 `model`（`provider/model`）；新增 `/team` 命令（`list \| retire <name> \| add <name> [--fork] [--model p/m] -- <prompt>`，以及 `model <name> <p/m>` = 退休 + 同名重建） |
+| `dsh-experimental-client-ui-agent-team` | `lib/client.js` | 团队面板（名册 / 任务卡 / 加人表单 / 每成员模型下拉 / 退休按钮）；换模型先弹确认，确认后走 `/team model`（旧会话退役、同名新建）；Remote 命名空间统一走 `ctx.get`；面板外包错误边界 |
 
 `package.json` 不补（registry 安装只改了依赖键顺序，是噪声）。逐行 diff 见 `patches/*.patch`，完整哈希见 [`manifest.json`](manifest.json)。
 
@@ -94,8 +94,8 @@ node apply.mjs --revert    # 还原 7 个文件 + profile 里加的那一行
 | 检查 | 覆盖 |
 |---|---|
 | `retire-check` / `retire-event-check` / `reuse-check` | 退休可写入、投影隐藏、三条非法转换仍被拒；同名重建重放不报 failure；**Lead agent 不活跃时队友仍解析到本队**（9/9） |
-| `team-command-check` | `/team` 的 list / add / retire、`--model`、`--` 后原文照传、各类畸形输入不抛（37/37） |
-| `team-ui-check` | 面板动作的调用契约 + **真渲染烟囱**（假 react hooks 直接调组件）覆盖「新队友还没选模型」这条崩溃 |
+| `team-command-check` | `/team` 的 list / add / retire / model、`--model`、`--` 后原文照传、各类畸形输入不抛（全绿） |
+| `team-ui-check` | 面板动作的调用契约（含「下拉改成先确认、确认后才发 `/team model`」）+ **真渲染烟囱**（假 react hooks 直接调组件）覆盖「新队友还没选模型」这条崩溃 |
 | `remote-namespace-check` | 用发行包里的真 Cordis 复刻命名空间形状，实测 `ctx.get` 无需声明、`ctx.remote.<ns>` 未声明会抛 |
 | `profile-wiring-check` | 临时 fixture 里跑完 `--check → apply → --check → --revert`，含「不重写 app 文件」「逐字节还原」「自动探测安装位置」(18/18) |
 | `bundle-check` | 插件那一半：`dsh.bundle`/`dsh.client` 清单、bundle patch 的形状、宿主插件注册 `/teammates` 并真的跑一次 add（含"宿主忽略模型时不静默"分支）、浏览器 bundle 能按 `__ModuleLoader__` 契约加载、且生成物与 `tools/build-plugin.mjs` 一致 |
@@ -108,7 +108,9 @@ node apply.mjs --revert    # 还原 7 个文件 + profile 里加的那一行
 | `apply` 之后 | `PATCHED` + `WIRED`，exit 0 | **全部 exit 0** |
 | `--revert` 之后 | 回到 `NOT-PATCHED` + `NOT-WIRED`，exit 1 | 又失败 |
 
-`patched/` 的字节可以从公开 npm tarball（`@deepseek-ai/*@0.2.0-rc.2`）+ 一个派生基线精确复现（远端 tree 与本地 tree 相同）。真机上还实测过：加人、退休、每成员模型下拉、队友用 `send_message` 给 Lead 发消息。
+`patched/` 的字节可以从公开 npm tarball（`@deepseek-ai/*@0.2.0-rc.2`）+ 一个派生基线精确复现（远端 tree 与本地 tree 相同）。真机上实测过：加人（含 `--fork`）、退休、面板每成员模型下拉**显示**当前模型、队友用 `send_message` 给 Lead 发消息。
+
+**尚未真机验证**：换模型的「确认 → 退役 → 同名重建」这条新路（离线全绿，等重启后复跑）；「下拉里选一下就能热切模型」**做不到**——子会话模型创建即冻结，这也是要上游化的那个 issue。
 
 **保留（没有独立坐实的部分，请当待验证）**：满员 → 退休 → 再 spawn 的端到端（离线证明，未在满员团队上复跑）；`client.js` 的 pristine 是**派生基线**（桌面 app 自带的是另一次构建，只差生成型 CSS 脚手架）；本仓库**没有在第二台机器上跑过**（能否适用由第 3 节的两条硬门槛把关）。
 
