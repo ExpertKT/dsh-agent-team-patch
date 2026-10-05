@@ -15,7 +15,8 @@
 // 应用后必须重启 DSH，服务端插件无热重载。
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,13 +35,24 @@ const opt = (name, dflt) => {
 const HELP = `DSH agent-team retire patch — idempotent applier
 
   node apply.mjs [--root <DSH resources/app>] [--check|--revert] [--force]
+                 [--dsh-home <dir>] [--profile <dir>]
 
   (no flags)  apply the patch (no-op if already applied)
-  --check     report status only; exit 0 when every file is patched, 1 otherwise
+  --check     report status only; exit 0 when every file is patched and the profile
+              lists the Agent Teams bundle
   --revert    restore the *.dsh-retire.bak backups created by a previous apply
   --force     overwrite files whose hash matches neither pristine nor patched
   --root      DSH resources/app directory (default: $DSH_APP_ROOT, then
               F:/DSHDesktop/DSH Desktop/resources/app)
+  --dsh-home  DSH home directory (default: $DSH_HOME, then ~/.dsh)
+  --profile   profile directory to wire (default: <dsh-home>/profiles/$DSH_PROFILE,
+              or the only profile that has a package.json)
+
+Besides the files, the applier makes <profile>/package.json list
+@deepseek-ai/dsh-experimental-agent-team-profile in dsh.profile.bundles: without that
+line the composition never includes Agent Teams, so the patched packages would sit on
+disk unused and the header panel would never appear. A package.json.dsh-team.bak is
+kept next to it and --revert puts it back.
 
 After applying, restart DSH: server-side plugins are not hot-reloaded.
 `;
@@ -50,7 +62,9 @@ if (flag('help')) {
   process.exit(0);
 }
 
-if (argv.some((a) => !a.startsWith('--') && !['apply', 'check', 'revert'].includes(a) && a !== opt('root', null))) {
+const VALUE_FLAGS = ['root', 'profile', 'dsh-home'];
+const allowedValues = new Set(VALUE_FLAGS.map((name) => opt(name, null)).filter((value) => value !== null));
+if (argv.some((a) => !a.startsWith('--') && !['apply', 'check', 'revert'].includes(a) && !allowedValues.has(a))) {
   console.error(`unexpected argument; try --help`);
   process.exit(2);
 }
@@ -59,6 +73,62 @@ const MANIFEST = JSON.parse(await readFile(join(HERE, 'manifest.json'), 'utf8'))
 const ROOT = resolve(opt('root', process.env.DSH_APP_ROOT ?? 'F:/DSHDesktop/DSH Desktop/resources/app'));
 const MODE = flag('revert') ? 'revert' : flag('check') || flag('verify') ? 'check' : 'apply';
 const FORCE = flag('force');
+
+const PROFILE_BUNDLE = '@deepseek-ai/dsh-experimental-agent-team-profile';
+const DSH_HOME = resolve(opt('dsh-home', process.env.DSH_HOME ?? join(homedir(), '.dsh')));
+
+/** Locate the profile package.json to wire, without guessing between several. */
+async function resolveProfile() {
+  const explicit = opt('profile', undefined);
+  if (explicit !== undefined) return resolve(explicit);
+  const named = process.env.DSH_PROFILE;
+  if (named !== undefined) return join(DSH_HOME, 'profiles', named);
+  const root = join(DSH_HOME, 'profiles');
+  if (!existsSync(root)) return void 0;
+  const found = (await readdir(root, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, 'package.json')))
+    .map((entry) => entry.name);
+  return found.length === 1 ? join(root, found[0]) : void 0;
+}
+
+const PROFILE = await resolveProfile();
+const PROFILE_PKG = PROFILE === void 0 ? void 0 : join(PROFILE, 'package.json');
+const PROFILE_BAK = PROFILE_PKG === void 0 ? void 0 : `${PROFILE_PKG}.dsh-team.bak`;
+
+/** Whether the profile lists the Agent Teams bundle; `undefined` when we cannot tell. */
+async function profileWired() {
+  if (PROFILE_PKG === void 0 || !existsSync(PROFILE_PKG)) return void 0;
+  try {
+    const bundles = JSON.parse(await readFile(PROFILE_PKG, 'utf8'))?.dsh?.profile?.bundles;
+    return Array.isArray(bundles) ? bundles.includes(PROFILE_BUNDLE) : false;
+  } catch {
+    return void 0;
+  }
+}
+
+/** Add the bundle id, leaving the rest of the file alone. Returns true when it wrote. */
+async function wireProfile() {
+  const parsed = JSON.parse(await readFile(PROFILE_PKG, 'utf8'));
+  parsed.dsh ??= {};
+  parsed.dsh.profile ??= {};
+  if (!Array.isArray(parsed.dsh.profile.bundles)) parsed.dsh.profile.bundles = [];
+  if (parsed.dsh.profile.bundles.includes(PROFILE_BUNDLE)) return false;
+  parsed.dsh.profile.bundles.push(PROFILE_BUNDLE);
+  await writeFile(PROFILE_PKG, `${JSON.stringify(parsed, null, 2)}\n`);
+  return true;
+}
+
+/** Wire the profile when it is readable and missing the bundle. */
+async function ensureProfile() {
+  if (wired === void 0) {
+    console.log(`  skip     profile 接线（读不到/解析不了 ${PROFILE_PKG ?? DSH_HOME}）`);
+    return;
+  }
+  if (wired) return;
+  if (!existsSync(PROFILE_BAK)) await copyFile(PROFILE_PKG, PROFILE_BAK);
+  await wireProfile();
+  console.log(`  wired    ${PROFILE_PKG}  ← 加上 ${PROFILE_BUNDLE}`);
+}
 
 const pkgDir = (pkg) => join(ROOT, ROOT_PKG, pkg);
 const targetOf = (e) => join(pkgDir(e.package), e.path);
@@ -93,6 +163,7 @@ async function versionOf(pkg) {
 console.log(`patch      ${MANIFEST.patchName} (expects @deepseek-ai/* ${MANIFEST.expectedPackageVersion})`);
 console.log(`root       ${ROOT}`);
 console.log(`mode       ${MODE}${FORCE ? ' --force' : ''}`);
+console.log(`profile    ${PROFILE_PKG ?? `(unresolved under ${DSH_HOME} — pass --dsh-home or --profile)`}`);
 
 if (!exists(join(ROOT, 'package.json'))) {
   console.error(`\n[FAIL] ${ROOT} 不像是 DSH 资源目录（没有 package.json）。用 --root 指到 resources/app。`);
@@ -123,9 +194,11 @@ for (const { e, state } of states) {
 
 const count = (s) => states.filter((x) => x.state === s).length;
 
+const wired = await profileWired();
 if (MODE === 'check') {
-  const ok = count('patched') === states.length;
-  console.log(`\n${ok ? 'PATCHED' : 'NOT-PATCHED'}  patched=${count('patched')} pristine=${count('pristine')} drift=${count('drift')} missing=${count('missing')}`);
+  const ok = count('patched') === states.length && wired === true;
+  console.log(`\n${count('patched') === states.length ? 'PATCHED' : 'NOT-PATCHED'}  patched=${count('patched')} pristine=${count('pristine')} drift=${count('drift')} missing=${count('missing')}`);
+  console.log(`${wired === true ? 'WIRED' : 'NOT-WIRED'}      ${wired === void 0 ? 'profile could not be read or parsed' : wired ? `profile lists ${PROFILE_BUNDLE}` : `profile does not list ${PROFILE_BUNDLE}`}`);
   process.exit(ok ? 0 : 1);
 }
 
@@ -147,6 +220,11 @@ if (MODE === 'revert') {
       console.log(`  skip     ${e.package}/${e.path.replace(/\\/g, '/')} （已是 ${state}，不是打过补丁的状态；--force 可强还原）`);
     }
   }
+  if (PROFILE_BAK !== void 0 && existsSync(PROFILE_BAK)) {
+    await copyFile(PROFILE_BAK, PROFILE_PKG);
+    await rm(PROFILE_BAK);
+    console.log(`  reverted ${PROFILE_PKG}  (bundle 接线回到打补丁前)`);
+  }
   console.log(`\n还原 ${done} 个文件。重启 DSH 生效。`);
   process.exit(0);
 }
@@ -159,6 +237,7 @@ if (blocked > 0 && !FORCE) {
   process.exit(2);
 }
 if (count('patched') === states.length) {
+  await ensureProfile();
   console.log(`\nALREADY-APPLIED（${states.length} 个文件全部已是补丁版本，未写盘）。重启 DSH 即可生效。`);
   process.exit(0);
 }
@@ -181,6 +260,7 @@ for (const { e, state } of states) {
   if (!good) process.exitCode = 1;
 }
 
+await ensureProfile();
 console.log(`\nAPPLIED  ${changed} 个文件（新建 backup ${backedUp} 个）。`);
 console.log(`重启 DSH 生效；node ${join(HERE, 'checks', 'reuse-check.mjs')} 可离线复核。`);
 console.log(`卸载：node apply.mjs --revert`);

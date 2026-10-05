@@ -45,19 +45,23 @@ Error: Team member limit 8 reached
 ```powershell
 cd F:\dsh-team
 
-node apply.mjs --check      # 只看状态，不写盘；7 个文件全打上才 exit 0
-node apply.mjs              # 应用（幂等：已打过就是 no-op）
-node apply.mjs --revert     # 从 .dsh-retire.bak 还原
-node apply.mjs --root "D:\path\to\DSH Desktop\resources\app"   # 非默认安装位置
+node apply.mjs --check      # 只看状态，不写盘；7 个文件全打上**且 profile 已接线**才 exit 0
+node apply.mjs              # 应用：写 7 个文件 + 把团队 bundle 加进 profile（都幂等）
+node apply.mjs --revert     # 从 .dsh-retire.bak / profile 备份还原
+node apply.mjs --root "D:\path\to\DSH Desktop\resources\app" `
+               --dsh-home "D:\dsh-home" --profile "D:\dsh-home\profiles\web"
 
-# 6 个离线检查（都接受 DSH_APP_ROOT 覆盖根目录，默认 F:/DSHDesktop/DSH Desktop/resources/app）
+# 7 个离线检查（都接受 DSH_APP_ROOT 覆盖根目录，默认 F:/DSHDesktop/DSH Desktop/resources/app）
 node checks\retire-check.mjs
 node checks\retire-event-check.mjs
 node checks\reuse-check.mjs
 node checks\team-command-check.mjs
 node checks\team-ui-check.mjs
 node checks\remote-namespace-check.mjs
+node checks\profile-wiring-check.mjs
 ```
+
+`apply.mjs` 除文件外还会做一件事：确认 `<profile>/package.json` 的 `dsh.profile.bundles` 里有 `@deepseek-ai/dsh-experimental-agent-team-profile`，没有就加上（留 `package.json.dsh-team.bak`，`--revert` 还原）。**没有这一行，组合里根本没有 Agent Teams，补丁打上了也不会加载** —— 这是我们真踩过的坑。
 
 **装完必须重启 DSH**：服务端插件没有热重载（客户端插件在 `pnpm run dev:web` 跑着时可以热重载，服务端不行）。不重启会看到「补丁明明打上了却报 tool not found」。
 
@@ -91,7 +95,7 @@ node checks\remote-namespace-check.mjs
 
 以下每条都是本次复核**亲自跑/亲自读**得到的结果，命令原样可复现。
 
-**a. 六个离线检查全绿**
+**a. 七个离线检查全绿**
 
 ```
 $ node checks/retire-check.mjs           → RETIRE-CHECK OK: retired 可写入、投影隐藏、三条非法转换仍被拒            EXIT=0
@@ -100,6 +104,7 @@ $ node checks/reuse-check.mjs            → REUSE-CHECK OK（失败 0 项）  �
 $ node checks/team-command-check.mjs     → TEAM-COMMAND-CHECK OK（失败 0 项）  ← 37/37 PASS                    EXIT=0
 $ node checks/team-ui-check.mjs          → TEAM-UI-CHECK OK（失败 0 项）  ← 含真渲染烟囱，见下                     EXIT=0
 $ node checks/remote-namespace-check.mjs → REMOTE-NAMESPACE-CHECK OK                                      EXIT=0
+$ node checks/profile-wiring-check.mjs   → PROFILE-WIRING-CHECK OK（失败 0 项）  ← 16/16 PASS                 EXIT=0
 ```
 
 `reuse-check` 的 7 项：退休后同名重建重放无 failure（5 个事件全接受）；状态里留下两个成员（含退休的 a1）；投影里有新 b1；投影里没有退休 a1；两个在役同名仍被拒（`teammate name "zzz" is reused by another member`）；同名解析到在役的 b1；只剩退休成员时不可寻址（`THREW: TEAM_MEMBER_NOT_FOUND`）。
@@ -126,7 +131,7 @@ $ node checks/remote-namespace-check.mjs → REMOTE-NAMESPACE-CHECK OK          
 
 `tools/build-verify-root.mjs` 造一个「未打补丁但依赖可解析」的根目录：真实 `resources/app/node_modules` 全部 junction 进去，只有 3 个目标包是从 `.cache/pristine`（npm tarball）拷贝的原始文件，其中 `client.js` 用 `baseline/` 里的 app 侧派生基线。然后做对照实验：
 
-| 叠加根状态 | `apply.mjs --check` | 六个检查 |
+| 叠加根状态 | `apply.mjs --check` | 6 个补丁行为检查（`profile-wiring-check` 另有自己的 fixture，见上） |
 |---|---|---|
 | pristine（未打补丁） | `NOT-PATCHED patched=0 pristine=7 drift=0 missing=0`，EXIT=1 | 5 个 EXIT=1 失败（`retire-check`、`retire-event-check`、`reuse-check`、`team-command-check`、`team-ui-check`）；`remote-namespace-check` EXIT=0（它测 Cordis 语义，与补丁无关） |
 | `node apply.mjs --root <叠加根>` | `APPLIED 7 个文件`，随后 `--check` = `PATCHED patched=7`，EXIT=0 | **6 个全 EXIT=0 OK** |
@@ -215,26 +220,27 @@ maxMembers: 8
 - `checks/team-ui-check.mjs` 用「假 react hooks + 直接调用组件函数」渲染，**不是**真 React 渲染：它能抓渲染期抛错，抓不到 DOM/样式问题。
 - 队友在会话树里就是 Lead 的 continuable 子会话（上游设计，本补丁没改），所以 DSH 的**会话列表里它看起来像子智能体**；把它和普通子智能体区分开的**唯一界面是团队面板**。
 
-## 8. 在别人的机器上应用（前提与步骤）
+## 8. 在别人的机器上应用（贴给 agent 就行）
 
-前提：
-
-1. DSH 桌面版，`resources/app/node_modules/@deepseek-ai/` 下装有 `dsh-experimental-agent-team`、`dsh-experimental-tool-agent-team`、`dsh-experimental-client-ui-agent-team`，**都是 `0.2.0-rc.2`**；`dsh-experimental-agent-team-profile` 也要在（它才是把这三个插件接进组合的那层）。
-2. 该机器的 profile（`<DSH_HOME>/profiles/<name>/package.json`）里 `dsh.profile.bundles` 要有 `@deepseek-ai/dsh-experimental-agent-team-profile`。少了它，补丁打上了也看不到团队（这是我们踩过的坑：一次恢复事故后这两行从 profile 里掉了，表现就是「团队整个没了」）。
-3. Node ≥ 20；脚本只用 `node:` 内置模块，不需要 `npm install`。
-
-步骤：
+把本仓库地址丢给你的 agent，让它做两件事：
 
 ```powershell
-node apply.mjs --check          # 先看：7 个文件应当全是 pristine；报 drift 就停下来
-node apply.mjs                  # 打补丁（自动留 *.dsh-retire.bak）
-# 重启 DSH；客户端插件再按 Ctrl+F5
-node checks\reuse-check.mjs     # 抽查一个
-# 不想要了：
-node apply.mjs --revert
+node apply.mjs --check     # 先自检：会报 PATCHED/NOT-PATCHED 和 WIRED/NOT-WIRED
+node apply.mjs             # 装：7 个文件 + profile 接线（都不静默覆盖，都会留备份）
+# 然后完全退出 DSH 再打开（服务端插件没有热重载；客户端插件至少 Ctrl+F5）
 ```
 
-`--check` 三种输出对应三种处置：`pristine` = 可打；`patched` = 已打过（幂等跳过）；`drift`/`missing` = 停下人工核对（很可能是 DSH 版本不同）。
+**门槛只有三条，任何一条不满足都会明确拒绝而不是猜：**
+
+| 门槛 | 谁在把关 | 不满足时的表现 |
+|---|---|---|
+| 三个包必须是 `0.2.0-rc.2` | `apply.mjs` 读每个包的 `package.json` | `[FAIL] N 个包版本不符`，exit 2，不写盘 |
+| 目标文件必须是**这份构建**的原始字节 | `apply.mjs` 拿 sha256 对 `manifest.json` | 逐文件报 `drift`：`--check` exit 1、`apply` 拒绝并 exit 2（升级过、或不是同一个 app 构建，就按第 9 节重新生成） |
+| profile 必须能定位到 | `--dsh-home` / `--profile`，否则读 `$DSH_HOME` / `$DSH_PROFILE` | 报 `profile (unresolved …)`，跳过接线 —— 这时团队不会出现在组合里，补一条参数再来一次即可 |
+
+前两条是「这份补丁不适用」的硬信号；第三条只是路径提示。装完之后，**能不能选到某个模型取决于那台机器自己的 provider 配置**（面板照 host 报上来的模型目录列，不做白名单）。
+
+`apply.mjs` 的四种文件状态：`pristine` = 可打；`patched` = 已打过（幂等跳过）；`drift`/`missing` = 停下人工核对。
 
 ## 9. 怎么重新生成这个补丁（升级 DSH 后）
 
