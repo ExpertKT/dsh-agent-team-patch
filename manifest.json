@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "patchName": "dsh-agent-team-retire-model-panel",
+  "expectedPackageVersion": "0.2.0-rc.2",
+  "generatedFrom": "npm tarball 0.2.0-rc.2 (pristine) vs installed DSH desktop app",
+  "files": [
+    {
+      "package": "dsh-experimental-agent-team",
+      "path": "lib/index.js",
+      "bytes": 74936,
+      "pristine": "7e8122ed7ae6723dc5152af32cc62b592f5c39a36a88dc71f280fd332c815419",
+      "patched": "2f4d5f534ae9bd8d5ef9a6905711e583530c7c4d35a3290a0d627bb4a77586d8"
+    },
+    {
+      "package": "dsh-experimental-agent-team",
+      "path": "lib/invariant.js",
+      "bytes": 18504,
+      "pristine": "1c9cd7fb3244adfed303bfdb5119c799083ec5291b685d92d5e68d0998752a02",
+      "patched": "fe223b36a3b9087f3c979018e40406f99aacd85fb214afef190e7549466b30f5"
+    },
+    {
+      "package": "dsh-experimental-agent-team",
+      "path": "lib/types/index.js",
+      "bytes": 10067,
+      "pristine": "60873a170ef2132b5c2e8bea8a3a0220719eff68b4e830c677d1280071b63035",
+      "patched": "d737e78744fce5a040970f6c4057f1135a99e9c9c11fbefd0d93fbafc6bf8da4"
+    },
+    {
+      "package": "dsh-experimental-agent-team",
+      "path": "lib/types/projection.js",
+      "bytes": 14100,
+      "pristine": "7240e25bceae67312c7b0253f6fb725794104595f10e94c4ffb899c869c0f247",
+      "patched": "682fb4f0268e94446c120763a7cd4681c7e10a7a395f3979773a85e62556c6ba"
+    },
+    {
+      "package": "dsh-experimental-agent-team",
+      "path": "lib/types/roster.js",
+      "bytes": 22487,
+      "pristine": "9fe386eb529a7432a475b309ff827e601f03ac3a605595758d6c840bbe220ea5",
+      "patched": "b42c523afc796fbf3a0a7f610d862c4c50db64f4d404e0500467ee1f2c63bc4c"
+    },
+    {
+      "package": "dsh-experimental-client-ui-agent-team",
+      "path": "lib/client.js",
+      "bytes": 37895,
+      "pristine": "3a679458016b30b3374329c8470902b6293209a4084ece33c1b5ec29699e35c4",
+      "patched": "825313ffa16276e2c84869886cf53f50f0cc669b3ccffb7e672cd888b4f4bbe5"
+    },
+    {
+      "package": "dsh-experimental-tool-agent-team",
+      "path": "lib/index.js",
+      "bytes": 25249,
+      "pristine": "cafdbb7a050431b17251527789d0fcb2e9b95c006a7513786c2c43fea3aca937",
+      "patched": "c8220026830b81b3a611fd38b80512e3e6eead7d6a8b32469a13074a4c8a149e"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# Build scaffolding: npm tarballs, extracted pristine trees, the derived baseline
+# clone, the unpatched verify root and check logs. All of it is reproducible with
+# tools/build-manifest.mjs + tools/build-verify-root.mjs, and none of it belongs in
+# the repo (it is either large or machine-specific).
+.cache/
+
+# Transient byte snapshots. patched/ is the canonical copy.
+wip/
+
+# The applier writes these next to the patched files inside the app install.
+*.dsh-retire.bak

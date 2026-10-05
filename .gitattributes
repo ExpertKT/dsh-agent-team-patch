@@ -1,0 +1,8 @@
+# patched/ and baseline/ are byte-exact payloads: apply.mjs copies them verbatim and
+# verifies sha256 against manifest.json, so git must never rewrite their line endings.
+/patched/** -text
+/baseline/** -text
+
+# Everything else is ordinary text; keep it LF in the repo and in the working tree so
+# the tools behave the same on Windows, macOS and Linux.
+* text=auto eol=lf

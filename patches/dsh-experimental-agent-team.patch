@@ -1,0 +1,379 @@
+diff --git a/a/lib/index.js b/b/lib/index.js
+index d1c4527..0c0accb 100644
+--- a/a/lib/index.js
++++ b/b/lib/index.js
+@@ -353,8 +353,8 @@ function resolveActiveMember(root, state, rawName) {
+ 		id: root.id,
+ 		name
+ 	};
+-	const member = state.members.find((candidate) => candidate.name === name);
+-	if (member === void 0 || member.phase !== "active") throw new TeamError(`active teammate "${name}" not found`, "TEAM_MEMBER_NOT_FOUND");
++	const member = state.members.find((candidate) => candidate.name === name && candidate.phase === "active");
++	if (member === void 0) throw new TeamError(`active teammate "${name}" not found`, "TEAM_MEMBER_NOT_FOUND");
+ 	return {
+ 		id: member.id,
+ 		name
+@@ -445,6 +445,7 @@ var TeamRoster = class {
+ 			diagnostics: []
+ 		}];
+ 		for (const member of state.members) {
++			if (member.phase === "retired") continue;
+ 			const live = this.ctx.agents.get(member.id);
+ 			const model = live?.options.model ?? root.options.model;
+ 			result.push({
+@@ -464,7 +465,8 @@ var TeamRoster = class {
+ 	/**
+ 	* Create one named, continuable direct child of the Team Lead.
+ 	* @param caller - exact live Lead Agent.
+-	* @param request - immutable name, description, prompt, context mode, provider, and cancellation.
++	* @param request - immutable name, description, prompt, context mode, provider, optional
++	* LLM route, and cancellation.
+ 	* @returns the active roster row.
+ 	*/
+ 	async spawn(caller, request) {
+@@ -516,6 +518,37 @@ var TeamRoster = class {
+ 		return { previousStatus };
+ 	}
+ 	/**
++	* Retire one teammate durably: it stops holding a roster seat and leaves the
++	* model-facing roster, while its record, tasks, and messages stay.
++	* @param caller - exact live Lead Agent.
++	* @param targetName - durable teammate name.
++	* @returns the target status sampled before retirement.
++	*/
++	async retire(caller, targetName) {
++		const membership = this.membership(caller);
++		if (membership.role !== "lead") throw new TeamError("only the Team Lead can retire teammates", "TEAM_LEAD_REQUIRED");
++		const root = membership.root;
++		const state = this.journal.state(root);
++		const target = resolveActiveMember(root, state, targetName);
++		if (target.id === root.id) throw new TeamError("the Team Lead cannot retire itself", "TEAM_INVALID_TARGET");
++		const prior = state.members.find((member) => member.id === target.id);
++		const live = this.ctx.agents.get(target.id);
++		const previousStatus = availability(live);
++		await this.journal.appendAndFlush(root, "team/member", {
++			version: 2,
++			teamId: TeamId(root.id),
++			member: {
++				...prior,
++				phase: "retired"
++			}
++		});
++		if (live !== void 0) this.ctx.subagents.interrupt(target.id, {
++			kind: "ancestor",
++			agent: caller
++		});
++		return { previousStatus };
++	}
++	/**
+ 	* Group exact live roster children by their current Lead for runtime teardown.
+ 	* @returns each live Lead and the roster child ids currently in the Agent registry.
+ 	*/
+@@ -560,8 +593,8 @@ var TeamRoster = class {
+ 		};
+ 		await this.journal.transact(root.id, async () => {
+ 			const state = this.journal.state(root);
+-			if (state.members.some((member) => member.name === name)) throw new TeamError(`teammate name "${name}" was already used in this Team`, "TEAM_MEMBER_NAME_TAKEN");
+-			if (state.members.length >= this.maxMembers) throw new TeamError(`Team member limit ${this.maxMembers} reached`, "TEAM_MEMBER_LIMIT");
++			if (state.members.some((member) => member.name === name && member.phase !== "retired")) throw new TeamError(`teammate name "${name}" was already used in this Team`, "TEAM_MEMBER_NAME_TAKEN");
++			if (state.members.filter((member) => member.phase !== "retired").length >= this.maxMembers) throw new TeamError(`Team member limit ${this.maxMembers} reached`, "TEAM_MEMBER_LIMIT");
+ 			await this.journal.appendAndFlush(root, "team/member", {
+ 				version: 2,
+ 				teamId: TeamId(root.id),
+@@ -576,7 +609,8 @@ var TeamRoster = class {
+ 				label: description,
+ 				request: {
+ 					prompt: request.prompt,
+-					parent: root
++					parent: root,
++					...request.agentOptions === void 0 ? {} : { agentOptions: request.agentOptions }
+ 				},
+ 				signal
+ 			});
+@@ -1152,7 +1186,8 @@ const teamMemberSnapshotSchema = z$1.object({
+ 	phase: z$1.enum([
+ 		"provisioning",
+ 		"active",
+-		"failed"
++		"failed",
++		"retired"
+ 	]),
+ 	error: z$1.string().optional()
+ }).strict();
+@@ -1294,13 +1329,15 @@ function applyCurrentTeamEvent(state, event) {
+ 			const member = event.data.member;
+ 			const index = state.members.findIndex((candidate) => candidate.id === member.id);
+ 			const prior = state.members[index];
+-			const named = state.members.find((candidate) => candidate.name === member.name);
++			const named = state.members.find((candidate) => candidate.name === member.name && candidate.phase !== "retired");
+ 			if (named !== void 0 && named.id !== member.id) throw new Error(`teammate name "${member.name}" is reused by another member`);
+ 			if (prior === void 0) {
+ 				if (member.phase !== "provisioning") throw new Error(`teammate "${member.name}" must begin provisioning`);
+ 			} else {
+ 				if (prior.name !== member.name || prior.provider !== member.provider || prior.context !== member.context) throw new Error(`teammate "${member.id}" changed immutable identity fields`);
+-				if (prior.phase !== "provisioning" || member.phase === "provisioning") throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
++				const settles = prior.phase === "provisioning" && (member.phase === "active" || member.phase === "failed");
++				const retires = member.phase === "retired" && (prior.phase === "active" || prior.phase === "failed");
++				if (!settles && !retires) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
+ 			}
+ 			return {
+ 				...state,
+@@ -1355,7 +1392,8 @@ const teamMemberProjectionSchema = z$1.object({
+ 	phase: z$1.enum([
+ 		"provisioning",
+ 		"active",
+-		"failed"
++		"failed",
++		"retired"
+ 	]),
+ 	error: z$1.string().optional()
+ }).strict();
+@@ -1390,13 +1428,16 @@ function buildTeamProjection(state) {
+ 		role: "lead",
+ 		phase: "active"
+ 	}];
+-	for (const member of state.members) members.push({
+-		id: member.id,
+-		name: member.name,
+-		role: "teammate",
+-		phase: member.phase,
+-		...member.error === void 0 ? {} : { error: member.error }
+-	});
++	for (const member of state.members) {
++		if (member.phase === "retired") continue;
++		members.push({
++			id: member.id,
++			name: member.name,
++			role: "teammate",
++			phase: member.phase,
++			...member.error === void 0 ? {} : { error: member.error }
++		});
++	}
+ 	return {
+ 		members,
+ 		tasks: state.tasks.filter((task) => task.status !== "deleted").map((task) => projectTaskView(state, task)),
+@@ -1829,6 +1870,15 @@ var TeamService = class extends Service {
+ 		return this.roster.interrupt(caller, targetName);
+ 	}
+ 	/**
++	* Retire one teammate so it stops holding a roster seat.
++	* @param caller - exact live Lead Agent.
++	* @param targetName - durable teammate name.
++	* @returns the target status sampled before retirement.
++	*/
++	retireTeammate(caller, targetName) {
++		return this.roster.retire(caller, targetName);
++	}
++	/**
+ 	* Resolve a caller without throwing, used by scoped-tool installation and observers.
+ 	* @param agent - candidate exact live Agent.
+ 	* @returns Team membership, or undefined for non-Team subagents and stale identities.
+diff --git a/a/lib/invariant.js b/b/lib/invariant.js
+index 7f6e902..5702b89 100644
+--- a/a/lib/invariant.js
++++ b/b/lib/invariant.js
+@@ -193,7 +193,8 @@ const teamMemberSnapshotSchema = z.object({
+ 	phase: z.enum([
+ 		"provisioning",
+ 		"active",
+-		"failed"
++		"failed",
++		"retired"
+ 	]),
+ 	error: z.string().optional()
+ }).strict();
+@@ -335,13 +336,15 @@ function applyCurrentTeamEvent(state, event) {
+ 			const member = event.data.member;
+ 			const index = state.members.findIndex((candidate) => candidate.id === member.id);
+ 			const prior = state.members[index];
+-			const named = state.members.find((candidate) => candidate.name === member.name);
++			const named = state.members.find((candidate) => candidate.name === member.name && candidate.phase !== "retired");
+ 			if (named !== void 0 && named.id !== member.id) throw new Error(`teammate name "${member.name}" is reused by another member`);
+ 			if (prior === void 0) {
+ 				if (member.phase !== "provisioning") throw new Error(`teammate "${member.name}" must begin provisioning`);
+ 			} else {
+ 				if (prior.name !== member.name || prior.provider !== member.provider || prior.context !== member.context) throw new Error(`teammate "${member.id}" changed immutable identity fields`);
+-				if (prior.phase !== "provisioning" || member.phase === "provisioning") throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
++				const settles = prior.phase === "provisioning" && (member.phase === "active" || member.phase === "failed");
++				const retires = member.phase === "retired" && (prior.phase === "active" || prior.phase === "failed");
++				if (!settles && !retires) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
+ 			}
+ 			return {
+ 				...state,
+@@ -396,7 +399,8 @@ const teamMemberProjectionSchema = z.object({
+ 	phase: z.enum([
+ 		"provisioning",
+ 		"active",
+-		"failed"
++		"failed",
++		"retired"
+ 	]),
+ 	error: z.string().optional()
+ }).strict();
+@@ -431,13 +435,16 @@ function buildTeamProjection(state) {
+ 		role: "lead",
+ 		phase: "active"
+ 	}];
+-	for (const member of state.members) members.push({
+-		id: member.id,
+-		name: member.name,
+-		role: "teammate",
+-		phase: member.phase,
+-		...member.error === void 0 ? {} : { error: member.error }
+-	});
++	for (const member of state.members) {
++		if (member.phase === "retired") continue;
++		members.push({
++			id: member.id,
++			name: member.name,
++			role: "teammate",
++			phase: member.phase,
++			...member.error === void 0 ? {} : { error: member.error }
++		});
++	}
+ 	return {
+ 		members,
+ 		tasks: state.tasks.filter((task) => task.status !== "deleted").map((task) => projectTaskView(state, task)),
+diff --git a/a/lib/types/index.js b/b/lib/types/index.js
+index 26ad6b7..ff867eb 100644
+--- a/a/lib/types/index.js
++++ b/b/lib/types/index.js
+@@ -167,6 +167,15 @@ export class TeamService extends Service {
+     interrupt(caller, targetName) {
+         return this.roster.interrupt(caller, targetName);
+     }
++    /**
++     * Retire one teammate so it stops holding a roster seat.
++     * @param caller - exact live Lead Agent.
++     * @param targetName - durable teammate name.
++     * @returns the target status sampled before retirement.
++     */
++    retireTeammate(caller, targetName) {
++        return this.roster.retire(caller, targetName);
++    }
+     /**
+      * Resolve a caller without throwing, used by scoped-tool installation and observers.
+      * @param agent - candidate exact live Agent.
+diff --git a/a/lib/types/projection.js b/b/lib/types/projection.js
+index 41aaf80..bf7a664 100644
+--- a/a/lib/types/projection.js
++++ b/b/lib/types/projection.js
+@@ -49,7 +49,7 @@ const teamMemberSnapshotSchema = z.object({
+     description: z.string(),
+     provider: z.string(),
+     context: z.enum(['fresh', 'fork']),
+-    phase: z.enum(['provisioning', 'active', 'failed']),
++    phase: z.enum(['provisioning', 'active', 'failed', 'retired']),
+     error: z.string().optional(),
+ }).strict();
+ const teamTaskSnapshotSchema = z.object({
+@@ -187,7 +187,7 @@ function applyCurrentTeamEvent(state, event) {
+             const member = event.data.member;
+             const index = state.members.findIndex(candidate => candidate.id === member.id);
+             const prior = state.members[index];
+-            const named = state.members.find(candidate => candidate.name === member.name);
++            const named = state.members.find(candidate => candidate.name === member.name && candidate.phase !== 'retired');
+             if (named !== undefined && named.id !== member.id) {
+                 throw new Error(`teammate name "${member.name}" is reused by another member`);
+             }
+@@ -199,7 +199,9 @@ function applyCurrentTeamEvent(state, event) {
+                 if (prior.name !== member.name || prior.provider !== member.provider || prior.context !== member.context) {
+                     throw new Error(`teammate "${member.id}" changed immutable identity fields`);
+                 }
+-                if (prior.phase !== 'provisioning' || member.phase === 'provisioning') {
++                const settles = prior.phase === 'provisioning' && (member.phase === 'active' || member.phase === 'failed');
++                const retires = member.phase === 'retired' && (prior.phase === 'active' || prior.phase === 'failed');
++                if (!settles && !retires) {
+                     throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
+                 }
+             }
+@@ -250,7 +252,7 @@ const teamMemberProjectionSchema = z.object({
+     id: sessionIdSchema,
+     name: z.string(),
+     role: z.enum(['lead', 'teammate']),
+-    phase: z.enum(['provisioning', 'active', 'failed']),
++    phase: z.enum(['provisioning', 'active', 'failed', 'retired']),
+     error: z.string().optional(),
+ }).strict();
+ const teamTaskViewSchema = z.object({
+@@ -276,6 +278,8 @@ function buildTeamProjection(state) {
+     const rootId = brandString(state.id);
+     const members = [{ id: rootId, name: 'lead', role: 'lead', phase: 'active' }];
+     for (const member of state.members) {
++        if (member.phase === 'retired')
++            continue;
+         members.push({
+             id: member.id,
+             name: member.name,
+diff --git a/a/lib/types/roster.js b/b/lib/types/roster.js
+index 99da75a..f03a057 100644
+--- a/a/lib/types/roster.js
++++ b/b/lib/types/roster.js
+@@ -19,8 +19,8 @@ export function resolveActiveMember(root, state, rawName) {
+     const name = rawName.trim();
+     if (name === 'lead')
+         return { id: root.id, name };
+-    const member = state.members.find(candidate => candidate.name === name);
+-    if (member === undefined || member.phase !== 'active') {
++    const member = state.members.find(candidate => candidate.name === name && candidate.phase === 'active');
++    if (member === undefined) {
+         throw new TeamError(`active teammate "${name}" not found`, 'TEAM_MEMBER_NOT_FOUND');
+     }
+     return { id: member.id, name };
+@@ -113,6 +113,8 @@ export class TeamRoster {
+                 diagnostics: [],
+             }];
+         for (const member of state.members) {
++            if (member.phase === 'retired')
++                continue;
+             const live = this.ctx.agents.get(member.id);
+             const model = live?.options.model ?? root.options.model;
+             result.push({
+@@ -190,6 +192,34 @@ export class TeamRoster {
+         this.ctx.subagents.interrupt(target.id, { kind: 'ancestor', agent: caller });
+         return { previousStatus };
+     }
++    /**
++     * Retire one teammate durably: it stops holding a roster seat and leaves the
++     * model-facing roster, while its record, tasks, and messages stay.
++     * @param caller - exact live Lead Agent.
++     * @param targetName - durable teammate name.
++     * @returns the target status sampled before retirement.
++     */
++    async retire(caller, targetName) {
++        const membership = this.membership(caller);
++        if (membership.role !== 'lead')
++            throw new TeamError('only the Team Lead can retire teammates', 'TEAM_LEAD_REQUIRED');
++        const root = membership.root;
++        const state = this.journal.state(root);
++        const target = resolveActiveMember(root, state, targetName);
++        if (target.id === root.id)
++            throw new TeamError('the Team Lead cannot retire itself', 'TEAM_INVALID_TARGET');
++        const prior = state.members.find(member => member.id === target.id);
++        const live = this.ctx.agents.get(target.id);
++        const previousStatus = availability(live);
++        await this.journal.appendAndFlush(root, 'team/member', {
++            version: 2,
++            teamId: TeamId(root.id),
++            member: { ...prior, phase: 'retired' },
++        });
++        if (live !== undefined)
++            this.ctx.subagents.interrupt(target.id, { kind: 'ancestor', agent: caller });
++        return { previousStatus };
++    }
+     /**
+      * Group exact live roster children by their current Lead for runtime teardown.
+      * @returns each live Lead and the roster child ids currently in the Agent registry.
+@@ -240,10 +270,10 @@ export class TeamRoster {
+         };
+         await this.journal.transact(root.id, async () => {
+             const state = this.journal.state(root);
+-            if (state.members.some(member => member.name === name)) {
++            if (state.members.some(member => member.name === name && member.phase !== 'retired')) {
+                 throw new TeamError(`teammate name "${name}" was already used in this Team`, 'TEAM_MEMBER_NAME_TAKEN');
+             }
+-            if (state.members.length >= this.maxMembers) {
++            if (state.members.filter(member => member.phase !== 'retired').length >= this.maxMembers) {
+                 throw new TeamError(`Team member limit ${this.maxMembers} reached`, 'TEAM_MEMBER_LIMIT');
+             }
+             await this.journal.appendAndFlush(root, 'team/member', { version: 2, teamId: TeamId(root.id), member });

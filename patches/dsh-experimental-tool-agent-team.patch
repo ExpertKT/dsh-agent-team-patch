@@ -1,0 +1,219 @@
+diff --git a/a/lib/index.js b/b/lib/index.js
+index 67925ab..ca3dd64 100644
+--- a/a/lib/index.js
++++ b/b/lib/index.js
+@@ -1,6 +1,7 @@
+ import z from "@deepseek-ai/schemastery";
+ import { TeamTaskId } from "@deepseek-ai/dsh-experimental-agent-team";
+ import { defineTool } from "@deepseek-ai/dsh-tools";
++import { CommandDefinitionId } from "@deepseek-ai/dsh-commands/brand";
+ //#region lib/types/index.js
+ /** Scoped model-facing tools for the opt-in Agent Teams runtime. */
+ /** Cordis plugin name. */
+@@ -24,7 +25,7 @@ The Team Lead and all teammates share the same working directory and filesystem.
+ 
+ Prefer read/edit/write for file changes. If a file operation returns FS_STALE_VERSION, read the current file, rebase your intended change onto the new content, and retry. Bash, formatters, code generators, and scripts are not fully protected by the filesystem version guard; coordinate them explicitly and have the Lead review the final diff and run tests.
+ 
+-Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A delivered peer item starts with its stable message id and sender name. A successful send is already durable even when its result says queued; do not resend it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change. Re-list after wakeup or timeout. The Lead must wait for required teammates before giving the final answer.`;
++Use the target returned by spawn_teammate or list_agents for send_message, interrupt_agent, and retire_teammate, or as owner when assigning or filtering shared tasks. retire_teammate releases a teammate's roster seat while keeping its durable record, tasks, and messages; retire a teammate only once its work is handed off or superseded, and never to silence one that has unfinished work. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A delivered peer item starts with its stable message id and sender name. A successful send is already durable even when its result says queued; do not resend it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change. Re-list after wakeup or timeout. The Lead must wait for required teammates before giving the final answer.`;
+ const ACTIVE_WAIT_STATUSES = new Set(["running", "provisioning"]);
+ const NO_ACTIVE_PEER_MESSAGE = "No other Team member is running or provisioning. wait_agent cannot make progress or wake inactive teammates. Re-list with list_agents and team_task_list, then use send_message to wake each required inactive teammate before waiting again.";
+ /**
+@@ -77,6 +78,32 @@ function modelMember(member) {
+ 		...details
+ 	};
+ }
++/** The system reminder every newly created teammate starts with. */
++function teammateReminder(name) {
++	return `<system-reminder>
++You are teammate "${name}".
++Your Team Lead is named "lead".
++Use list_agents({}) to find your teammates and their names.
++To message your Team Lead, use send_message({ target: "lead", message: "..." }).
++To message another teammate, use send_message({ target: "<teammate name>", message: "..." }).
++</system-reminder>
++
++`;
++}
++/** Short roster description derived from a teammate's initial task. */
++function describeTask(task) {
++	const flat = task.trim().replace(/\s+/gu, " ");
++	return flat.length > 120 ? `${flat.slice(0, 117)}...` : flat;
++}
++/** Split one `provider/model` route; provider names and model ids never contain a slash. */
++function parseModelRoute(route) {
++	const separator = route.indexOf("/");
++	if (separator <= 0 || separator === route.length - 1) return void 0;
++	return {
++		provider: route.slice(0, separator),
++		model: route.slice(separator + 1)
++	};
++}
+ /** One shared task, matching the public `TeamTaskView`. */
+ const TASK_VIEW_SCHEMA = {
+ 	type: "object",
+@@ -262,32 +289,31 @@ function install(agent, ctx, config) {
+ 					type: "string",
+ 					enum: ["fresh", "fork"],
+ 					description: "fresh starts without Lead history; fork inherits completed Lead turns. Defaults to fresh."
++				},
++				model: {
++					type: "string",
++					description: "Optional `<provider>/<model>` LLM route for the teammate. Defaults to the Lead's route."
+ 				}
+ 			},
+ 			output: jsonOutput(SPAWN_VALUE_SCHEMA),
+ 			async execute(args, exec) {
+ 				const agent = callingAgent(exec.agent, "spawn_teammate");
+ 				const context = args.context ?? "fresh";
++				const model = args.model === void 0 ? void 0 : parseModelRoute(args.model);
++				if (args.model !== void 0 && model === void 0) throw new Error(`model must be "<provider>/<model>", got "${args.model}"`);
+ 				return { member: modelMember((await ctx.agentTeams.spawnTeammate(agent, {
+ 					name: args.name,
+ 					description: args.description,
+ 					prompt: [{
+ 						type: "text",
+-						text: `<system-reminder>
+-You are teammate "${args.name.trim()}".
+-Your Team Lead is named "lead".
+-Use list_agents({}) to find your teammates and their names.
+-To message your Team Lead, use send_message({ target: "lead", message: "..." }).
+-To message another teammate, use send_message({ target: "<teammate name>", message: "..." }).
+-</system-reminder>
+-
+-`
++						text: teammateReminder(args.name.trim())
+ 					}, {
+ 						type: "text",
+ 						text: args.prompt
+ 					}],
+ 					context,
+ 					provider: context === "fork" ? config.forkProvider : config.freshProvider,
++					...model === void 0 ? {} : { agentOptions: model },
+ 					signal: exec.signal
+ 				})).member) };
+ 			}
+@@ -363,6 +389,19 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
+ 				return Promise.resolve(ctx.agentTeams.interrupt(callingAgent(exec.agent, "interrupt_agent"), args.target));
+ 			}
+ 		})));
++		register(scoped.tools.register(defineTool({
++			name: "retire_teammate",
++			description: "Retire one teammate: it stops holding a roster seat and leaves list_agents, while its durable record, tasks, and messages stay. Team Lead only.",
++			parameters: { target: {
++				type: "string",
++				required: true,
++				description: "Teammate target returned by spawn_teammate or list_agents."
++			} },
++			output: jsonOutput(INTERRUPT_VALUE_SCHEMA),
++			async execute(args, exec) {
++				return await ctx.agentTeams.retireTeammate(callingAgent(exec.agent, "retire_teammate"), args.target);
++			}
++		})));
+ 		register(scoped.tools.register(defineTool({
+ 			name: "team_task_create",
+ 			description: "Create one unowned pending task on the shared Team task board.",
+@@ -529,6 +568,87 @@ To message another teammate, use send_message({ target: "<teammate name>", messa
+ 		for (const dispose of disposers.reverse()) dispose();
+ 	};
+ }
++/**
++* Parse one `/team` line. Grammar:
++* `list` | `retire <name>` | `add <name> [--fork] [--model <provider>/<model>] -- <prompt>`.
++* @param rawInput - text after the command name.
++* @returns a parsed request, or `{ error }` with usage text.
++*/
++function parseTeamCommand(rawInput) {
++	const raw = rawInput.trim();
++	// Everything after a standalone `--` is the prompt, kept verbatim (newlines included).
++	const separates = /(?:^|\s)--(?=\s|$)/u.exec(raw);
++	const prompt = separates === null ? "" : raw.slice(separates.index + separates[0].length).trim();
++	const tokens = (separates === null ? raw : raw.slice(0, separates.index)).split(/\s+/u).filter((token) => token !== "");
++	const addUsage = 'usage: /team add <name> [--fork] [--model <provider>/<model>] -- <prompt>';
++	if (tokens.length === 0 || tokens[0] === "help")
++		return { error: `usage: /team list | /team retire <name> | ${addUsage}` };
++	const [action, ...rest] = tokens;
++	if (action === "list") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team list" };
++	if (action === "retire")
++		return separates === null && rest.length === 1 ? { action, name: rest[0] } : { error: "usage: /team retire <name>" };
++	if (action !== "add") return { error: `unknown Team subcommand "${action}"; use list, add, or retire` };
++	const parsed = { action, context: "fresh" };
++	for (let index = 0; index < rest.length; index += 1) {
++		const token = rest[index];
++		if (token === "--fork") { parsed.context = "fork"; continue; }
++		if (token === "--model") {
++			const value = rest[index + 1];
++			const route = value === void 0 ? void 0 : parseModelRoute(value);
++			if (route === void 0) return { error: `--model needs <provider>/<model>, got "${value ?? ""}"` };
++			parsed.agentOptions = route;
++			index += 1;
++			continue;
++		}
++		if (parsed.name === void 0 && !token.startsWith("--")) { parsed.name = token; continue; }
++		return { error: `unexpected /team argument "${token}"` };
++	}
++	if (parsed.name === void 0) return { error: addUsage };
++	if (prompt === "") return { error: `the new teammate needs an initial task: /team add ${parsed.name} -- <prompt>` };
++	return { ...parsed, description: describeTask(prompt), prompt };
++}
++/**
++* Run one parsed `/team` request against the Team runtime. Every rejection is
++* reported as a command error so the panel can surface it in place.
++* @param ctx - the plugin Context carrying the injected Team service.
++* @param providers - configured fresh/fork subagent provider names.
++* @param invocation - the executing command invocation.
++* @returns the command result.
++*/
++async function executeTeamCommand(ctx, providers, invocation) {
++	const parsed = parseTeamCommand(invocation.rawInput);
++	if (parsed.error !== void 0) return { kind: "error", text: parsed.error };
++	const agent = invocation.agent;
++	try {
++		if (parsed.action === "list") {
++			const rows = ctx.agentTeams.listMembers(agent).map((member) => `${member.name} · ${member.role} · ${member.status}${member.model === void 0 ? "" : ` · ${member.model}`}`);
++			return { kind: "success", text: rows.length === 0 ? "No Team members." : rows.join("\n") };
++		}
++		if (parsed.action === "retire") {
++			const { previousStatus } = await ctx.agentTeams.retireTeammate(agent, parsed.name);
++			return { kind: "success", text: `retired teammate "${parsed.name}" (was ${previousStatus})` };
++		}
++		const context = parsed.context;
++		const { member } = await ctx.agentTeams.spawnTeammate(agent, {
++			name: parsed.name,
++			description: parsed.description,
++			prompt: [{
++				type: "text",
++				text: teammateReminder(parsed.name)
++			}, {
++				type: "text",
++				text: parsed.prompt
++			}],
++			context,
++			provider: context === "fork" ? providers.forkProvider : providers.freshProvider,
++			...parsed.agentOptions === void 0 ? {} : { agentOptions: parsed.agentOptions },
++			signal: invocation.signal
++		});
++		return { kind: "success", text: `spawned teammate "${member.name}"${member.model === void 0 ? "" : ` on ${member.model}`}` };
++	} catch (error) {
++		return { kind: "error", text: error instanceof Error ? error.message : String(error) };
++	}
++}
+ /** Install Team tools in every live or subsequently published Team member scope. */
+ function apply(ctx, config = {}) {
+ 	const resolved = {
+@@ -552,6 +672,15 @@ function apply(ctx, config = {}) {
+ 		for (const dispose of installed.values()) dispose();
+ 		installed.clear();
+ 	}, "tool-team.scopedTools()");
++	ctx.inject(["commands"], (commandCtx) => {
++		commandCtx.commands.register({
++			definitionId: CommandDefinitionId("@deepseek-ai/dsh-experimental-tool-agent-team"),
++			name: "team",
++			description: "Manage Agent Team members: list the roster, add a teammate, or retire one.",
++			input: { hint: "list | retire <name> | add <name> [--fork] [--model <provider>/<model>] -- <prompt>" },
++			handler: (invocation) => executeTeamCommand(ctx, resolved, invocation)
++		});
++	});
+ }
+ //#endregion
+ export { Config, apply, inject, name };
