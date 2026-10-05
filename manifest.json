@@ -7,9 +7,9 @@
     {
       "package": "dsh-experimental-agent-team",
       "path": "lib/index.js",
-      "bytes": 74936,
+      "bytes": 75450,
       "pristine": "7e8122ed7ae6723dc5152af32cc62b592f5c39a36a88dc71f280fd332c815419",
-      "patched": "2f4d5f534ae9bd8d5ef9a6905711e583530c7c4d35a3290a0d627bb4a77586d8"
+      "patched": "9ba60879db0dae00b119f602882b533c6fbbcbceb872a7702382bd0177424107"
     },
     {
       "package": "dsh-experimental-agent-team",
@@ -35,9 +35,9 @@
     {
       "package": "dsh-experimental-agent-team",
       "path": "lib/types/roster.js",
-      "bytes": 22487,
+      "bytes": 23163,
       "pristine": "9fe386eb529a7432a475b309ff827e601f03ac3a605595758d6c840bbe220ea5",
-      "patched": "b42c523afc796fbf3a0a7f610d862c4c50db64f4d404e0500467ee1f2c63bc4c"
+      "patched": "34fbbcc7049345db3b8ec0f544e18468bbb6f203c063122a948c1d6fa8bf12dc"
     },
     {
       "package": "dsh-experimental-client-ui-agent-team",

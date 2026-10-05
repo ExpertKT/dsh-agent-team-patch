@@ -93,7 +93,7 @@ node apply.mjs --revert    # 还原 7 个文件 + profile 里加的那一行
 
 | 检查 | 覆盖 |
 |---|---|
-| `retire-check` / `retire-event-check` / `reuse-check` | 退休可写入、投影隐藏、三条非法转换仍被拒；同名重建重放不报 failure（7/7） |
+| `retire-check` / `retire-event-check` / `reuse-check` | 退休可写入、投影隐藏、三条非法转换仍被拒；同名重建重放不报 failure；**Lead agent 不活跃时队友仍解析到本队**（9/9） |
 | `team-command-check` | `/team` 的 list / add / retire、`--model`、`--` 后原文照传、各类畸形输入不抛（37/37） |
 | `team-ui-check` | 面板动作的调用契约 + **真渲染烟囱**（假 react hooks 直接调组件）覆盖「新队友还没选模型」这条崩溃 |
 | `remote-namespace-check` | 用发行包里的真 Cordis 复刻命名空间形状，实测 `ctx.get` 无需声明、`ctx.remote.<ns>` 未声明会抛 |

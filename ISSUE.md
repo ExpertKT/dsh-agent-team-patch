@@ -211,6 +211,29 @@ RendererStartupFailure: Renderer boot failed for 1 plugin(s)
 
 ---
 
+## Issue E — Lead 空闲时，队友静默变成「自己那支空队」的 Lead（任务板变成 0）
+
+### 现象
+
+一个 19 人、46 条任务的团队里，队友 `foreman`（会话 `5c102838…`，就是用户正在对话的那个）调 `team_task_list` **连续 3 次**得到 `{"tasks":[]}`（`isError:false`，是"成功但空"而不是报错），而 Lead 会话的面板/投影里有全部 46 条任务（已完成 38 / 待办 7 / 进行中 1）。
+
+### 现场证据（读会话日志与投影得到）
+
+- `foreman` 自己的 `agentTeam` 投影是 `{"id":"5c102838…","members":[],"tasks":[]}` —— 它认为自己是一支空队的 Lead；
+- 它的会话头完整：`parentSession: session-5d6b7461…`、`origin: subagent`、`delegationDepth: 1`；
+- 它的 `subagent/descriptor` 在 seq 0，`version: 3, mode: continuable`（描述符存在）；
+- 同队另外 18 个成员会话里 `not a member of an active Agent Team` 出现 **0** 次 ⇒ 只有它落到了"自己当 Lead"这条兜底路径。
+
+### 根因（`TeamRoster.tryMembership`，`dsh-experimental-agent-team\lib\index.js:397-424`）
+
+它先用 `ctx.agents.get(parentSession)` 找 Lead；Lead 的 **Agent** 被闲置回收后取不到，于是落到兜底 `return { root: agent, role: "lead" }` —— 队友被当成新的 root，于是本队的任务板对它永远是空的，**而且不报错**（最危险的失败形态）。
+
+### 建议的上游修法
+
+当名册记录是 `active`/`provisioning`、而 Lead 的 **Agent** 不在时，改用 Lead 的 **Session**（`ctx.sessions.get(parentSessionId)`）继续解析 —— Team 状态本来就投影在 Lead 的 Session 上，不需要活的 Agent 对象。本仓库的实现见 `patches/dsh-experimental-agent-team.patch`，回归断言在 `checks/reuse-check.mjs` 第 5 节（「Lead agent 不活跃时，队友仍解析到本队」）。
+
+---
+
 ## 附：为什么不直接提「退休」这个补丁？
 
 本地的 `patches/` 是**发行代码热补丁**（改 `resources/app/node_modules`），只适合自用验证，不适合作为上游贡献形式：

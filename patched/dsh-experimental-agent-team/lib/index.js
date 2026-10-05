@@ -399,7 +399,18 @@ var TeamRoster = class {
 		try {
 			const parentId = agent.session.header.parentSession;
 			if (parentId !== void 0) {
-				const root = this.ctx.agents.get(parentId);
+				// A teammate can outlive its Lead: DSH disposes idle Agents while the
+				// Lead's Session — and the Team state projected on it — stays live.
+				// Fall back to the Session so the teammate keeps its real Team instead
+				// of silently becoming the Lead of an empty one.
+				const live = this.ctx.agents.get(parentId);
+				const session = live === void 0 ? this.ctx.sessions.get(parentId) : void 0;
+				const root = live !== void 0 ? live : session === void 0 ? void 0 : {
+					id: parentId,
+					session,
+					options: {},
+					status: void 0
+				};
 				if (root !== void 0) {
 					const member = this.journal.state(root).members.find((candidate) => candidate.id === agent.id);
 					if (member?.phase === "active" || member?.phase === "provisioning") return {

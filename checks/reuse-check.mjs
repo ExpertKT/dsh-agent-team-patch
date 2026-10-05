@@ -65,5 +65,35 @@ try {
 }
 ok('只剩退休成员时不可寻址', typeof onlyRetired === 'string' && onlyRetired.startsWith('THREW'), String(onlyRetired));
 
+// ── 5. 回归：Lead 的 Agent 被闲置回收后，队友仍属于本队（曾静默变成"自己的空队"）
+// 现场：队友 foreman（5c102838…）在 Lead 会话空闲时调 team_task_list 得到 {"tasks":[]}，
+// 而真 Lead 的投影里有 46 条任务 —— 因为 tryMembership 找不到活跃的 Lead agent 就把它
+// 当成"自己的 Lead"。修法：回退到 Lead 的 Session（ctx.sessions.get），Team 状态就投影在它上面。
+const { TeamRoster } = await import(`${base}roster.js`);
+const LEAD_ID = 'session-5d6b7461-9ddc-4558-8634-d98d2c40b78e';
+const leadSession = { id: LEAD_ID };
+const teamState = {
+  members: [member('c9', 'foreman', 'active')],
+  tasks: [{ id: 't1', status: 'pending' }],
+};
+const childAgent = {
+  id: uuid('c9'),
+  session: { header: { parentSession: LEAD_ID }, snapshotEvents: () => [] },
+};
+const rosterCtx = {
+  agents: { get: (id) => (id === childAgent.id ? childAgent : undefined) }, // Lead 的 agent 不活跃
+  sessions: { get: (id) => (id === LEAD_ID ? leadSession : undefined) },
+  sessionProjections: { stateOf: (s, key) => (s === leadSession && key === 'agentTeam' ? teamState : undefined) },
+};
+const roster = new TeamRoster(rosterCtx, { state: (root) => rosterCtx.sessionProjections.stateOf(root.session, 'agentTeam') }, {}, 16);
+let membership;
+try {
+  membership = roster.tryMembership(childAgent);
+} catch (e) {
+  membership = 'THREW: ' + e.message;
+}
+ok('Lead agent 不活跃时，队友仍解析到本队（不再变成自己的空队）', membership !== undefined && membership.role === 'teammate' && membership.root.id === LEAD_ID, JSON.stringify(membership));
+ok('该队友仍能读到本队任务板', membership !== undefined && membership.root !== childAgent && (rosterCtx.sessionProjections.stateOf(membership.root.session, 'agentTeam').tasks ?? []).length === 1);
+
 console.log(`\n${failures === 0 ? 'REUSE-CHECK OK' : 'REUSE-CHECK FAILED'}（失败 ${failures} 项）`);
 process.exit(failures === 0 ? 0 : 1);

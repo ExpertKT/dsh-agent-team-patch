@@ -92,7 +92,7 @@ issue 草案），不要重打一遍补丁 —— 盘上已经打好了。
 ### P7 队友模型 = 继承创建者会话模型，且无法为单个队友指定/切换
 - 现象：想让队友跑 luna，唯一办法是先把 **Lead 自己的模型芯片**切到 luna 再 `spawn_teammate` —— 子系统继承 spawner 当时的模型。`spawn_teammate` 没有模型参数，事后也没有「给这个队友换模型」的接口；子会话已经跑起来就改不动。
 - 证据（硬证据）：`checks\who-runs-what.mjs` 读各队友会话记录的 `modelSelection.val.lastUsed` —— 在 Lead 是 luna 时建的三个队友是 `{"provider":"openai","model":"gpt-5.6-luna","reasoningEffort":"low"}`；在 Lead 是 deepseek 时建的 `ui-luna` 是 `{"provider":"deepseek-account","model":"deepseek-flash","reasoningEffort":"low"}`。另有更早一次观测（子会话是 deepseek 而 profile 的 `agent-default-model` 指向 `zai/glm-5.3-flash`）**指向**「跟创建者、不跟 profile 默认」，但那是一次非受控观测，建议接手者用一次受控实验坐实。
-- 现状：**未修**（这是本次最核心的「模型随时切换」痛点）。
+- 现状：**上游已修**（2026-10-05 另一会话给 `spawn_teammate` 加了可选 `model: "<provider>/<model>"`，实现走 `parseModelRoute`，并加了 `/team` 斜杠命令；`retire_teammate` 与名字复用补丁逻辑一行没丢，已逐行对账）。**但「事后给已有队友换模型」仍然没有**——只能退休 + 同名重建（正是本文件 P1/P2 补丁的用途）。选模型前的实测见第 7 节。
 - 建议上游：`spawn_teammate` 加 `provider`/`model`/`reasoningEffort` 参数；`update_goal`-风格的工具加 `set_teammate_model`；模型切换应可热生效（或至少明确「只能对新建子会话生效」并在工具返回值里回显实际生效的模型）。
 
 ### P8 `list_agents` 的 `model` 字段对 inactive 成员会回退成 Lead 的模型（可观测性撒谎）
@@ -209,6 +209,42 @@ node F:\dsh-team\checks\who-runs-what.mjs
 | `F:\dsh-team\checks\who-runs-what.mjs` | 真机：从会话记录读出每个队友真实模型 |
 
 （本文件描述的所有改动都在 `resources\app\node_modules` 里，属**发行代码热补丁**，不是上游提交。）
+
+---
+
+## 7. 队友模型选型：实测与坑（2026-10-05，测于中转站 momoapi.asia）
+
+**结论先说：队友和 Lead 都用 `gpt-5.6-luna`。** `gpt-6-luna`（更新一代）在本机实测**默认档约 3 倍慢、抖动大**，而且直接把两个队友会话跑挂。
+
+### 7.1 延迟实测
+脚本：`F:\tmp\lead-model-latency.mjs`（固定 prompt、`max_tokens: 32`、直连 `https://momoapi.asia/v1/chat/completions`，key 取 `C:\Users\Maverick\.dsh\.credentials.yaml` 的 `OPENAI_API_KEY`；provider `openai` 在 profile 里的 `baseURL` 是 `https://momoapi.asia/`）。两轮各两次采样（单位 ms）：
+
+| 模型 / effort | 第一轮 | 第二轮 |
+|---|---|---|
+| `gpt-5.6-luna` / low | 1873 · 1798（均 1836） | 2579 · 1611（均 2095） |
+| `gpt-6-luna` / low | 2481 · **16551**（均 9516） | 3192 · 2937（均 3065） |
+| `gpt-6-luna` / effort 未设 | 5019 · 9814（均 7417） | **10669** · 6798（均 8734） |
+| `gpt-5.6-luna` / effort 未设 | 3215 · 2905（均 3060，含 reasoning_tokens 16/18） | 2661 · 2898（均 2780） |
+
+⇒ 单次最坏差 16551ms vs 1611ms。`gpt-6-luna` 在同题上还有「有时照搬 prompt 往事」的迹象（本文件 P7 更早的对照观察），综合判定：**不要为了「新一代」换 6**。
+
+### 7.2 失败模式（换 6-luna 后真的事件）
+两个队友会话（`9258a7c2`＝ui-luna、`3b3d7361`＝baren-luna）第一轮就死，后台通知是 `failed before it finished` / `It left no closing message`。日志原文（`C:\Users\Maverick\AppData\Roaming\DSH Desktop\logs\host\dsh-2026-10-05.error.log`）：
+
+```
+2026-10-05 18:25:16.405 [E] [dsh-agent-error] agent turn failed (session 9258a7c2-5328-4fb0-84bf-2d114a899169, turn 1, step 7) [PI_AI_ERROR]:
+Gateway routing budget expired before an upstream attempt could start
+```
+栈：`resources\app\node_modules\@deepseek-ai\dsh-agent-loop\lib\index.js:1133:42` → `:978:22` → `:889:11`。
+**排查入口**：那个 `logs\host\dsh-<date>.error.log` 里还有大量无害的 `[agent-registry] … agent/disposed listener threw: TypeError: Cannot read properties of undefined (reading 'catch')` —— 别被它带偏，真正的错误只有 `[dsh-agent-error] agent turn failed` 这一种。
+**注意**：会话记录文件里**不含失败原因**（`"failure": null`，没有 error/message 字段），要看日志。
+
+### 7.3 给队友换模型：现在唯一可行的路
+- 建的时候可以指名：`spawn_teammate(name, …, model: "openai/gpt-5.6-luna")`（上游已加的 `parseModelRoute`）。
+- **已经存在的队友换不了** ⇒ 只能 `retire_teammate` 退休 + **同名重建**（依赖本文件的 P1/P2 补丁：退休释放席位、名字可复用）。实测四个队友全部按这条路从 6-luna 回到 5.6-luna。
+- **验证实际生效的模型**：读 `C:\Users\Maverick\.dsh\storages\session_projcache\sessions\*.json`（结构是 `{version, record:{version, val:{…}}}`）里的 `modelSelection.val.lastUsed`，或直接跑 `checks\who-runs-what.mjs`。**不要用 `list_agents.model` 判 inactive 成员**（会回退成 Lead 的模型，见 P8）。
+- **Lead 自己的模型芯片只能由用户在界面里手动切**，没有任何工具能替它切；换队友模型前不必先切 Lead（`model:` 参数已可指名）。
+- 模型切换的副作用是**当前那一轮会丢**：会话重建成新 id，旧会话的上下文不继承 —— 换模型要挑「手上活已交付」的空档。
 
 ---
 

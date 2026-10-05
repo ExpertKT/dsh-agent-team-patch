@@ -1,5 +1,5 @@
 diff --git a/a/lib/index.js b/b/lib/index.js
-index d1c4527..0c0accb 100644
+index d1c4527..848ed5f 100644
 --- a/a/lib/index.js
 +++ b/b/lib/index.js
 @@ -353,8 +353,8 @@ function resolveActiveMember(root, state, rawName) {
@@ -13,7 +13,27 @@ index d1c4527..0c0accb 100644
  	return {
  		id: member.id,
  		name
-@@ -445,6 +445,7 @@ var TeamRoster = class {
+@@ -399,7 +399,18 @@ var TeamRoster = class {
+ 		try {
+ 			const parentId = agent.session.header.parentSession;
+ 			if (parentId !== void 0) {
+-				const root = this.ctx.agents.get(parentId);
++				// A teammate can outlive its Lead: DSH disposes idle Agents while the
++				// Lead's Session — and the Team state projected on it — stays live.
++				// Fall back to the Session so the teammate keeps its real Team instead
++				// of silently becoming the Lead of an empty one.
++				const live = this.ctx.agents.get(parentId);
++				const session = live === void 0 ? this.ctx.sessions.get(parentId) : void 0;
++				const root = live !== void 0 ? live : session === void 0 ? void 0 : {
++					id: parentId,
++					session,
++					options: {},
++					status: void 0
++				};
+ 				if (root !== void 0) {
+ 					const member = this.journal.state(root).members.find((candidate) => candidate.id === agent.id);
+ 					if (member?.phase === "active" || member?.phase === "provisioning") return {
+@@ -445,6 +456,7 @@ var TeamRoster = class {
  			diagnostics: []
  		}];
  		for (const member of state.members) {
@@ -21,7 +41,7 @@ index d1c4527..0c0accb 100644
  			const live = this.ctx.agents.get(member.id);
  			const model = live?.options.model ?? root.options.model;
  			result.push({
-@@ -464,7 +465,8 @@ var TeamRoster = class {
+@@ -464,7 +476,8 @@ var TeamRoster = class {
  	/**
  	* Create one named, continuable direct child of the Team Lead.
  	* @param caller - exact live Lead Agent.
@@ -31,7 +51,7 @@ index d1c4527..0c0accb 100644
  	* @returns the active roster row.
  	*/
  	async spawn(caller, request) {
-@@ -516,6 +518,37 @@ var TeamRoster = class {
+@@ -516,6 +529,37 @@ var TeamRoster = class {
  		return { previousStatus };
  	}
  	/**
@@ -69,7 +89,7 @@ index d1c4527..0c0accb 100644
  	* Group exact live roster children by their current Lead for runtime teardown.
  	* @returns each live Lead and the roster child ids currently in the Agent registry.
  	*/
-@@ -560,8 +593,8 @@ var TeamRoster = class {
+@@ -560,8 +604,8 @@ var TeamRoster = class {
  		};
  		await this.journal.transact(root.id, async () => {
  			const state = this.journal.state(root);
@@ -80,7 +100,7 @@ index d1c4527..0c0accb 100644
  			await this.journal.appendAndFlush(root, "team/member", {
  				version: 2,
  				teamId: TeamId(root.id),
-@@ -576,7 +609,8 @@ var TeamRoster = class {
+@@ -576,7 +620,8 @@ var TeamRoster = class {
  				label: description,
  				request: {
  					prompt: request.prompt,
@@ -90,7 +110,7 @@ index d1c4527..0c0accb 100644
  				},
  				signal
  			});
-@@ -1152,7 +1186,8 @@ const teamMemberSnapshotSchema = z$1.object({
+@@ -1152,7 +1197,8 @@ const teamMemberSnapshotSchema = z$1.object({
  	phase: z$1.enum([
  		"provisioning",
  		"active",
@@ -100,7 +120,7 @@ index d1c4527..0c0accb 100644
  	]),
  	error: z$1.string().optional()
  }).strict();
-@@ -1294,13 +1329,15 @@ function applyCurrentTeamEvent(state, event) {
+@@ -1294,13 +1340,15 @@ function applyCurrentTeamEvent(state, event) {
  			const member = event.data.member;
  			const index = state.members.findIndex((candidate) => candidate.id === member.id);
  			const prior = state.members[index];
@@ -118,7 +138,7 @@ index d1c4527..0c0accb 100644
  			}
  			return {
  				...state,
-@@ -1355,7 +1392,8 @@ const teamMemberProjectionSchema = z$1.object({
+@@ -1355,7 +1403,8 @@ const teamMemberProjectionSchema = z$1.object({
  	phase: z$1.enum([
  		"provisioning",
  		"active",
@@ -128,7 +148,7 @@ index d1c4527..0c0accb 100644
  	]),
  	error: z$1.string().optional()
  }).strict();
-@@ -1390,13 +1428,16 @@ function buildTeamProjection(state) {
+@@ -1390,13 +1439,16 @@ function buildTeamProjection(state) {
  		role: "lead",
  		phase: "active"
  	}];
@@ -152,7 +172,7 @@ index d1c4527..0c0accb 100644
  	return {
  		members,
  		tasks: state.tasks.filter((task) => task.status !== "deleted").map((task) => projectTaskView(state, task)),
-@@ -1829,6 +1870,15 @@ var TeamService = class extends Service {
+@@ -1829,6 +1881,15 @@ var TeamService = class extends Service {
  		return this.roster.interrupt(caller, targetName);
  	}
  	/**
@@ -306,7 +326,7 @@ index 41aaf80..bf7a664 100644
              id: member.id,
              name: member.name,
 diff --git a/a/lib/types/roster.js b/b/lib/types/roster.js
-index 99da75a..f03a057 100644
+index 99da75a..ae27730 100644
 --- a/a/lib/types/roster.js
 +++ b/b/lib/types/roster.js
 @@ -19,8 +19,8 @@ export function resolveActiveMember(root, state, rawName) {
@@ -320,7 +340,27 @@ index 99da75a..f03a057 100644
          throw new TeamError(`active teammate "${name}" not found`, 'TEAM_MEMBER_NOT_FOUND');
      }
      return { id: member.id, name };
-@@ -113,6 +113,8 @@ export class TeamRoster {
+@@ -67,7 +67,18 @@ export class TeamRoster {
+         try {
+             const parentId = agent.session.header.parentSession;
+             if (parentId !== undefined) {
+-                const root = this.ctx.agents.get(parentId);
++                // A teammate can outlive its Lead: DSH disposes idle Agents while the
++                // Lead's Session — and the Team state projected on it — stays live.
++                // Fall back to the Session so the teammate keeps its real Team instead
++                // of silently becoming the Lead of an empty one.
++                const live = this.ctx.agents.get(parentId);
++                const session = live === undefined ? this.ctx.sessions.get(parentId) : undefined;
++                const root = live !== undefined ? live : session === undefined ? undefined : {
++                    id: parentId,
++                    session,
++                    options: {},
++                    status: undefined
++                };
+                 if (root !== undefined) {
+                     const member = this.journal.state(root).members.find(candidate => candidate.id === agent.id);
+                     if (member?.phase === 'active' || member?.phase === 'provisioning') {
+@@ -113,6 +124,8 @@ export class TeamRoster {
                  diagnostics: [],
              }];
          for (const member of state.members) {
@@ -329,7 +369,7 @@ index 99da75a..f03a057 100644
              const live = this.ctx.agents.get(member.id);
              const model = live?.options.model ?? root.options.model;
              result.push({
-@@ -190,6 +192,34 @@ export class TeamRoster {
+@@ -190,6 +203,34 @@ export class TeamRoster {
          this.ctx.subagents.interrupt(target.id, { kind: 'ancestor', agent: caller });
          return { previousStatus };
      }
@@ -364,7 +404,7 @@ index 99da75a..f03a057 100644
      /**
       * Group exact live roster children by their current Lead for runtime teardown.
       * @returns each live Lead and the roster child ids currently in the Agent registry.
-@@ -240,10 +270,10 @@ export class TeamRoster {
+@@ -240,10 +281,10 @@ export class TeamRoster {
          };
          await this.journal.transact(root.id, async () => {
              const state = this.journal.state(root);
