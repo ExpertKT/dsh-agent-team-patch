@@ -1,0 +1,15 @@
+# Bundle patch for dsh-agent-team-panel.
+#
+# Applied when this package is enabled in the profile's dsh.profile.bundles. It
+# replaces the experimental Agent Teams client UI with this package's panel (both
+# register the same conversation-header slot, so only one may be enabled) and adds
+# the panel's host side, which registers the `/teammates add` command the panel drives.
+#
+# A patch that matches nothing only warns and is skipped, so this stays valid when the
+# experimental client UI is not installed at all.
+- id: ui-agent-team
+  disabled: true
+
+- insert:
+    - id: agent-team-panel
+      name: dsh-agent-team-panel

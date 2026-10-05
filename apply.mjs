@@ -70,7 +70,45 @@ if (argv.some((a) => !a.startsWith('--') && !['apply', 'check', 'revert'].includ
 }
 
 const MANIFEST = JSON.parse(await readFile(join(HERE, 'manifest.json'), 'utf8'));
-const ROOT = resolve(opt('root', process.env.DSH_APP_ROOT ?? 'F:/DSHDesktop/DSH Desktop/resources/app'));
+const LEGACY_DEFAULT = 'F:/DSHDesktop/DSH Desktop/resources/app';
+
+/** Candidate DSH `resources/app` directories, in priority order (one level deep, cheap). */
+async function detectRoots() {
+  const bases = [
+    process.env.LOCALAPPDATA === void 0 ? void 0 : join(process.env.LOCALAPPDATA, 'Programs'),
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    'C:\\DSHDesktop',
+    'D:\\DSHDesktop',
+    'E:\\DSHDesktop',
+    'F:\\DSHDesktop'
+  ].filter((base) => base !== void 0 && existsSync(base));
+  const found = [];
+  for (const base of bases) {
+    let entries = [];
+    try {
+      entries = await readdir(base, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const app = join(base, entry.name, 'resources', 'app');
+      if (!existsSync(join(app, 'package.json'))) continue;
+      try {
+        const name = JSON.parse(await readFile(join(app, 'package.json'), 'utf8')).name;
+        if (typeof name === 'string' && name.startsWith('dsh-plugin-desktop')) found.push(app);
+      } catch {
+        // not a readable app manifest: ignore this candidate
+      }
+    }
+  }
+  return [...new Set(found)];
+}
+
+const explicitRoot = opt('root', process.env.DSH_APP_ROOT ?? void 0) ?? void 0;
+const DETECTED = explicitRoot === void 0 ? await detectRoots() : [];
+const ROOT = resolve(explicitRoot ?? DETECTED[0] ?? LEGACY_DEFAULT);
 const MODE = flag('revert') ? 'revert' : flag('check') || flag('verify') ? 'check' : 'apply';
 const FORCE = flag('force');
 
@@ -161,7 +199,8 @@ async function versionOf(pkg) {
 }
 
 console.log(`patch      ${MANIFEST.patchName} (expects @deepseek-ai/* ${MANIFEST.expectedPackageVersion})`);
-console.log(`root       ${ROOT}`);
+console.log(`root       ${ROOT}${explicitRoot !== void 0 ? '' : DETECTED.length > 0 ? '  (auto-detected)' : '  (legacy default — pass --root if your install is elsewhere)'}`);
+if (DETECTED.length > 1) console.log(`           other candidates: ${DETECTED.slice(1).join(' | ')}`);
 console.log(`mode       ${MODE}${FORCE ? ' --force' : ''}`);
 console.log(`profile    ${PROFILE_PKG ?? `(unresolved under ${DSH_HOME} — pass --dsh-home or --profile)`}`);
 

@@ -1,0 +1,48 @@
+{
+  "name": "dsh-agent-team-panel",
+  "description": "Conversation-header Agent Teams panel: live roster, add a teammate, and switch the model of each teammate.",
+  "version": "0.2.0-rc.2",
+  "type": "module",
+  "main": "./lib/panel/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/panel/index.js"
+    },
+    "./client": {
+      "default": "./lib/panel/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib/panel/index.js",
+    "lib/panel/client.js"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-api-session-controller": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-experimental-agent-team": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@deepseek-ai/cordis": "~4.0.4"
+  }
+}

@@ -10,7 +10,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +40,9 @@ const originalProfile = `${JSON.stringify({
 await rm(FIXTURE, { recursive: true, force: true });
 await mkdir(APP, { recursive: true });
 await mkdir(PROFILE, { recursive: true });
-await writeFile(join(APP, 'package.json'), '{}\n');
+// The applier identifies a DSH install by the app manifest's package name.
+const APP_MANIFEST = `${JSON.stringify({ name: 'dsh-plugin-desktop', version: '2.0.17' }, null, 2)}\n`;
+await writeFile(join(APP, 'package.json'), APP_MANIFEST);
 await writeFile(PROFILE_PKG, originalProfile);
 for (const entry of manifest.files) {
 	const pkgDir = join(APP, 'node_modules', '@deepseek-ai', entry.package);
@@ -49,9 +51,11 @@ for (const entry of manifest.files) {
 	await copyFile(join(HERE, 'patched', entry.package, entry.path), join(pkgDir, entry.path));
 }
 
-const run = (args) => {
+const run = (args, extraEnv) => {
+	const env = { ...process.env, ...extraEnv };
+	if (extraEnv?.DSH_APP_ROOT === void 0) delete env.DSH_APP_ROOT;
 	try {
-		const stdout = execFileSync(process.execPath, [join(HERE, 'apply.mjs'), '--profile', PROFILE, ...args], { cwd: HERE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+		const stdout = execFileSync(process.execPath, [join(HERE, 'apply.mjs'), '--profile', PROFILE, ...args], { cwd: HERE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env });
 		return { code: 0, output: stdout };
 	} catch (error) {
 		return { code: error.status ?? 1, output: `${error.stdout ?? ''}${error.stderr ?? ''}` };
@@ -74,7 +78,7 @@ check('apply exits 0', applied.code === 0, `exit=${applied.code}`);
 check('apply adds the Agent Teams bundle', (await bundles()).includes(BUNDLE), JSON.stringify(await bundles()));
 check('apply keeps a package.json backup', existsSync(`${PROFILE_PKG}.dsh-team.bak`));
 check('apply leaves the other bundles alone', (await bundles())[0] === '@deepseek-ai/dsh-base');
-check('apply did not rewrite the app package.json', (await readFile(join(APP, 'package.json'), 'utf8')) === '{}\n');
+check('apply did not rewrite the app package.json', (await readFile(join(APP, 'package.json'), 'utf8')) === APP_MANIFEST);
 
 const second = run(['--root', APP, '--check']);
 check('--check exits 0 once wired', second.code === 0, `exit=${second.code}`);
@@ -95,6 +99,16 @@ check('--revert removes the Agent Teams bundle', !(await bundles()).includes(BUN
 check('--revert restores the original bytes', (await readFile(PROFILE_PKG, 'utf8')) === originalProfile);
 check('--revert consumes the backup', !existsSync(`${PROFILE_PKG}.dsh-team.bak`));
 check('--check exits 1 again after revert', run(['--root', APP, '--check']).code === 1);
+
+// ── 5. the applier finds the install itself ───────────────────────────────
+// A second copy of the fixture app under %LOCALAPPDATA%\Programs must win over the
+// machine's own install, so `--root` is only needed when detection is ambiguous.
+const detectedApp = join(FIXTURE, 'local', 'Programs', 'DSH Desktop', 'resources', 'app');
+await mkdir(dirname(detectedApp), { recursive: true });
+await cp(APP, detectedApp, { recursive: true });
+const detected = run(['--check'], { LOCALAPPDATA: join(FIXTURE, 'local') });
+check('auto-detects the install under %LOCALAPPDATA%\\Programs', detected.output.includes(`root       ${detectedApp}`), detected.output.split('\n')[0]);
+check('detection still reports the file state', detected.output.includes('PATCHED  patched=7'), detected.output);
 
 console.log(failures.length === 0 ? 'PROFILE-WIRING-CHECK OK（失败 0 项）' : `PROFILE-WIRING-CHECK FAILED（${failures.length} 项）`);
 for (const failure of failures) console.log(`  FAIL  ${failure}`);

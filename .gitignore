@@ -7,5 +7,9 @@
 # Transient byte snapshots. patched/ is the canonical copy.
 wip/
 
+# checks/bundle-check.mjs junctions this to the installed DSH app so the host plugin's
+# bare @deepseek-ai/* imports resolve while the repository is checked out.
+node_modules/
+
 # The applier writes these next to the patched files inside the app install.
 *.dsh-retire.bak
