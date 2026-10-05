@@ -1,26 +1,28 @@
 diff --git a/a/lib/client.js b/b/lib/client.js
-index 56cf8e1..9235bb2 100644
+index 56cf8e1..7386e4e 100644
 --- a/a/lib/client.js
 +++ b/b/lib/client.js
-@@ -67,6 +67,8 @@ window.__ModuleLoader__.load({
+@@ -67,6 +67,9 @@ window.__ModuleLoader__.load({
  				case "inactive": return "memberStatus.inactive";
  				case "provisioning": return "memberStatus.provisioning";
  				case "failed": return "memberStatus.failed";
++				case "resting": return "memberStatus.resting";
 +				/* v8 ignore next -- an unknown phase still renders its raw state text. */
 +				default: return status;
  			}
  		}
  		function memberDotState(status) {
-@@ -74,6 +76,8 @@ window.__ModuleLoader__.load({
+@@ -74,6 +77,9 @@ window.__ModuleLoader__.load({
  				case "running":
  				case "provisioning": return "ongoing";
  				case "failed": return "error";
++				case "resting": return "warning";
 +				/* v8 ignore next -- an unknown phase still renders an idle dot. */
 +				default: return "idle";
  			}
  		}
  		function taskDotState(task) {
-@@ -85,16 +89,160 @@ window.__ModuleLoader__.load({
+@@ -85,16 +91,160 @@ window.__ModuleLoader__.load({
  				case "deleted": return "idle";
  			}
  		}
@@ -185,7 +187,7 @@ index 56cf8e1..9235bb2 100644
  				side: "bottom",
  				gap: 4,
  				disabled: inert,
-@@ -140,6 +288,7 @@ window.__ModuleLoader__.load({
+@@ -140,6 +290,7 @@ window.__ModuleLoader__.load({
  						]
  					})]
  				})
@@ -193,7 +195,7 @@ index 56cf8e1..9235bb2 100644
  			});
  		}
  		/** Task card with a two-line description clamp expanded from a toggle in the meta row. */
-@@ -220,9 +369,18 @@ window.__ModuleLoader__.load({
+@@ -220,9 +371,18 @@ window.__ModuleLoader__.load({
  			});
  		}
  		/** Render the Team roster and read-only task board. */
@@ -213,7 +215,7 @@ index 56cf8e1..9235bb2 100644
  			const rootRef = (0, react.useRef)(null);
  			const triggerRef = (0, react.useRef)(null);
  			const triggerLabelRef = (0, react.useRef)(null);
-@@ -296,6 +454,137 @@ window.__ModuleLoader__.load({
+@@ -296,6 +456,137 @@ window.__ModuleLoader__.load({
  					document.removeEventListener("keydown", dismiss);
  				};
  			}, [open]);
@@ -351,7 +353,7 @@ index 56cf8e1..9235bb2 100644
  			const compact = team !== void 0 && team.members.length === 1 && team.tasks.length === 0;
  			return (0, react_jsx_runtime.jsxs)("div", {
  				ref: rootRef,
-@@ -366,10 +655,13 @@ window.__ModuleLoader__.load({
+@@ -366,10 +657,18 @@ window.__ModuleLoader__.load({
  										useSessions,
  										useSessionStatus,
  										openTeammate,
@@ -362,14 +364,190 @@ index 56cf8e1..9235bb2 100644
  										t
  									}, member.id))
 -								})] }),
-+								}), addForm] }),
++								}), addForm] }), (0, react_jsx_runtime.jsx)(LocalModelGate, { t }), (0, react_jsx_runtime.jsx)(TeamRestSwitch, {
++									team,
++									leadSessionId,
++									runTeamCommand,
++									t
++								}),
  								(0, react_jsx_runtime.jsx)("section", { children: team.tasks.length === 0 ? (0, react_jsx_runtime.jsx)("p", {
  									className: TeamAction_module_css_default.emptyNotice,
  									children: t("empty")
-@@ -418,6 +710,24 @@ window.__ModuleLoader__.load({
+@@ -390,6 +689,145 @@ window.__ModuleLoader__.load({
+ 			});
+ 		}
+ 		//#endregion
++		//#region lead: 本地模型闸口开关（开工 / 休息）
++		/**
++		 * 本地模型闸口（`F:\shudong\tools\llm-gate.mjs`，状态在 `F:\shudong\data\llm-gate.json`）的开关：
++		 * off=休息（谁都不许用本机 Ollama）· product=只准产品 · on=开工（团队可跑实验）。
++		 * 和 http://127.0.0.1:11499/gate 那个页面共用同一份状态，两边改哪边都立刻生效。
++		 */
++		const GATE_BASE = "http://127.0.0.1:11499";
++		function LocalModelGate({ t }) {
++			const [state, setState] = (0, react.useState)(null);
++			const [error, setError] = (0, react.useState)(null);
++			const [busy, setBusy] = (0, react.useState)(false);
++			const load = (0, react.useCallback)(async () => {
++				try {
++					const r = await fetch(`${GATE_BASE}/gate/state`, { cache: "no-store" });
++					setState(await r.json());
++					setError(null);
++				} catch (e) {
++					setError(String((e && e.message) || e));
++				}
++			}, []);
++			(0, react.useEffect)(() => {
++				load();
++				const timer = setInterval(load, 5000);
++				return () => clearInterval(timer);
++			}, [load]);
++			const change = (0, react.useCallback)(async (mode) => {
++				setBusy(true);
++				try {
++					const r = await fetch(`${GATE_BASE}/gate/set?mode=${encodeURIComponent(mode)}`, { cache: "no-store" });
++					const next = await r.json();
++					if (!r.ok) throw new Error(next && next.error ? next.error.message : `HTTP ${r.status}`);
++					setState(next);
++					setError(null);
++				} catch (e) {
++					setError(String((e && e.message) || e));
++				} finally {
++					setBusy(false);
++				}
++			}, []);
++			const mode = state && state.mode;
++			const button = (value, text) => (0, react_jsx_runtime.jsx)("button", {
++				type: "button",
++				disabled: busy,
++				onClick: () => change(value),
++				style: {
++					font: "inherit",
++					fontSize: 12,
++					padding: "4px 10px",
++					borderRadius: 8,
++					cursor: busy ? "default" : "pointer",
++					border: `1px solid ${mode === value ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-border-l2)"}`,
++					background: mode === value ? "var(--dsw-alias-bg-layer-2)" : "transparent",
++					color: "var(--dsw-alias-label-primary)"
++				},
++				children: text
++			}, value);
++			const line = mode === "on" ? t("gate.working") : mode === "product" ? t("gate.product") : mode === "off" ? t("gate.resting") : t("gate.unknown");
++			return (0, react_jsx_runtime.jsxs)("section", { children: [
++				(0, react_jsx_runtime.jsx)("h3", { children: t("gate.title") }),
++				(0, react_jsx_runtime.jsxs)("div", {
++					className: error === null ? TeamAction_module_css_default.notice : TeamAction_module_css_default.error,
++					role: "status",
++					children: [
++						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: error !== null ? "error" : mode === "off" || mode === void 0 ? "warning" : "done" }),
++						error !== null ? t("gate.fail", { message: error }) : line
++					]
++				}),
++				(0, react_jsx_runtime.jsxs)("div", {
++					style: { display: "flex", gap: 6, margin: "6px 0 0 4px", flexWrap: "wrap" },
++					children: [button("on", t("gate.work")), button("product", t("gate.productOnly")), button("off", t("gate.rest"))]
++				}),
++				(0, react_jsx_runtime.jsx)("div", {
++					style: { color: "var(--dsw-alias-label-caption)", fontSize: 12, margin: "6px 0 0 4px" },
++					children: t("gate.hint")
++				})
++			] });
++		}
++		//#endregion
++		//#region lead: 团队休息开关（休息 = 全队不干活）
++		/**
++		 * 团队级「开工 / 休息」：休息时每个队友进入 resting 相位 —— 谁也喊不动（发消息会被拒），
++		 * 正在跑的 turn 会被打断，重启 DSH 也还在休息；开工才恢复。和成员状态同一份持久记录。
++		 */
++		function TeamRestSwitch({ team, leadSessionId, runTeamCommand, t }) {
++			const [busy, setBusy] = (0, react.useState)(false);
++			const [error, setError] = (0, react.useState)(null);
++			const teammates = (team && team.members ? team.members : []).filter((member) => member.role === "teammate");
++			const resting = teammates.filter((member) => member.phase === "resting");
++			const allRest = teammates.length > 0 && resting.length === teammates.length;
++			const flip = async (command) => {
++				setBusy(true);
++				try {
++					const result = await runTeamCommand(leadSessionId, command);
++					if (result.kind === "error") throw new Error(result.text);
++					setError(null);
++				} catch (e) {
++					setError(String((e && e.message) || e));
++				} finally {
++					setBusy(false);
++				}
++			};
++			const line = allRest ? t("team.resting", { count: resting.length }) : t("team.working", { count: teammates.length - resting.length });
++			const button = (text, command, active) => (0, react_jsx_runtime.jsx)("button", {
++				type: "button",
++				disabled: busy,
++				onClick: () => flip(command),
++				style: {
++					font: "inherit",
++					fontSize: 12,
++					padding: "4px 10px",
++					borderRadius: 8,
++					cursor: busy ? "default" : "pointer",
++					border: `1px solid ${active ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-border-l2)"}`,
++					background: active ? "var(--dsw-alias-bg-layer-2)" : "transparent",
++					color: "var(--dsw-alias-label-primary)"
++				},
++				children: text
++			}, command);
++			return (0, react_jsx_runtime.jsxs)("section", { children: [
++				(0, react_jsx_runtime.jsx)("h3", { children: t("team.title") }),
++				(0, react_jsx_runtime.jsxs)("div", {
++					className: error === null ? TeamAction_module_css_default.notice : TeamAction_module_css_default.error,
++					role: "status",
++					children: [
++						(0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.StateDot, { state: error !== null ? "error" : allRest ? "warning" : teammates.length === 0 ? "idle" : "done" }),
++						error !== null ? t("team.fail", { message: error }) : line
++					]
++				}),
++				(0, react_jsx_runtime.jsxs)("div", {
++					style: { display: "flex", gap: 6, margin: "6px 0 0 4px", flexWrap: "wrap" },
++					children: [button(t("team.work"), "/team work", !allRest), button(t("team.rest"), "/team rest", allRest)]
++				}),
++				(0, react_jsx_runtime.jsx)("div", {
++					style: { color: "var(--dsw-alias-label-caption)", fontSize: 12, margin: "6px 0 0 4px" },
++					children: t("team.hint")
++				})
++			] });
++		}
++		//#endregion
+ 		//#region lib/types/client/locales.js
+ 		/** Agent Teams Web dictionaries. */
+ 		/** Locale namespace owned by the Agent Teams Web UI. */
+@@ -397,6 +835,23 @@ window.__ModuleLoader__.load({
+ 		/** Simplified Chinese dictionary and key source. */
+ 		const zh = {
+ 			trigger: "智能体团队",
++			"gate.title": "本地模型闸口",
++			"gate.work": "开工（团队可用）",
++			"gate.productOnly": "只准产品",
++			"gate.rest": "休息（关闭）",
++			"gate.working": "开工中 —— 团队可以跑本机模型",
++			"gate.product": "只准产品 —— 线上吧友能用，实验不许",
++			"gate.resting": "休息中 —— 谁都不许用本机模型",
++			"gate.unknown": "闸口没起（或读不到状态）",
++			"gate.fail": "改不动闸口：{message}",
++			"gate.hint": "和 http://127.0.0.1:11499/gate 是同一个开关，改完立刻生效",
++			"team.title": "团队：开工 / 休息",
++			"team.work": "开工",
++			"team.rest": "休息",
++			"team.working": "开工中 —— {count} 位队友在岗（有派活才动手）",
++			"team.resting": "休息中 —— 全队 {count} 位都停着，谁也喊不动",
++			"team.fail": "改不动团队状态：{message}",
++			"team.hint": "休息＝全队停止干活（再发消息会被拒，正在跑的会停）；开工才能重新派活",
+ 			loading: "正在加载团队…",
+ 			unavailable: "Team 暂不可用",
+ 			failure: "团队持久记录无效：{message}",
+@@ -418,6 +873,25 @@ window.__ModuleLoader__.load({
  			"memberStatus.inactive": "未运行",
  			"memberStatus.provisioning": "准备中",
  			"memberStatus.failed": "失败",
++			"memberStatus.resting": "休息中",
 +			addOpen: "添加队友",
 +			addClose: "收起",
 +			addName: "队友名字",
@@ -391,10 +569,35 @@ index 56cf8e1..9235bb2 100644
  			"status.pending": "待处理",
  			"status.in_progress": "进行中",
  			"status.completed": "已完成"
-@@ -446,14 +756,72 @@ window.__ModuleLoader__.load({
+@@ -425,6 +899,23 @@ window.__ModuleLoader__.load({
+ 		/** English dictionary checked against the Chinese key set. */
+ 		const en = {
+ 			trigger: "Agent Team",
++			"gate.title": "Local model gate",
++			"gate.work": "Start work (team may use it)",
++			"gate.productOnly": "Product only",
++			"gate.rest": "Rest (closed)",
++			"gate.working": "Working — the team may use the local model",
++			"gate.product": "Product only — the site may use it, experiments may not",
++			"gate.resting": "Resting — nobody may use the local model",
++			"gate.unknown": "Gate is not running (or its state is unreadable)",
++			"gate.fail": "Could not change the gate: {message}",
++			"gate.hint": "The same switch as http://127.0.0.1:11499/gate; changes apply immediately",
++			"team.title": "Team: work / rest",
++			"team.work": "Work",
++			"team.rest": "Rest",
++			"team.working": "Working — {count} teammate(s) on duty (they only move when assigned)",
++			"team.resting": "Resting — all {count} teammates are stopped; messages are refused",
++			"team.fail": "Could not change the Team state: {message}",
++			"team.hint": "Rest stops the whole Team (messages refused, running turns interrupted); Work lets it take jobs again",
+ 			loading: "Loading Team…",
+ 			unavailable: "Team is unavailable",
+ 			failure: "Invalid persisted Team record: {message}",
+@@ -446,14 +937,73 @@ window.__ModuleLoader__.load({
  			"memberStatus.inactive": "Inactive",
  			"memberStatus.provisioning": "Provisioning",
  			"memberStatus.failed": "Failed",
++			"memberStatus.resting": "Resting",
 +			addOpen: "Add teammate",
 +			addClose: "Close",
 +			addName: "Teammate name",
@@ -465,7 +668,7 @@ index 56cf8e1..9235bb2 100644
  		const inject = [
  			"sessions",
  			"uiWorkspace",
-@@ -467,14 +835,36 @@ window.__ModuleLoader__.load({
+@@ -467,14 +1017,36 @@ window.__ModuleLoader__.load({
  		* @param ctx - Client Context carrying the injected navigation, locale, slot, and Session services.
  		*/
  		function registerAgentTeamUi(ctx) {
@@ -506,7 +709,7 @@ index 56cf8e1..9235bb2 100644
  			const actions = { openTeammate(sessionId, childSessionId) {
  				const parentSessionId = leadSessionId(sessionId);
  				if ((sessions.retainInfo(sessionId).getSnapshot().retainedBy.mainView ?? 0) === 0) return;
-@@ -487,6 +877,29 @@ window.__ModuleLoader__.load({
+@@ -487,6 +1059,29 @@ window.__ModuleLoader__.load({
  					childSessionId,
  					mode: "continuable"
  				});
@@ -536,7 +739,7 @@ index 56cf8e1..9235bb2 100644
  			} };
  			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
  				name: "conversation.session.header.actions",
-@@ -494,7 +907,17 @@ window.__ModuleLoader__.load({
+@@ -494,7 +1089,17 @@ window.__ModuleLoader__.load({
  				order: -20,
  				locale: NS,
  				inject: () => actions

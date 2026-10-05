@@ -96,6 +96,9 @@ const clientSource = await readFile(clientPath, 'utf8');
 check('the browser bundle registers this package id', clientSource.includes('id: "dsh-agent-team-panel"'));
 check('the browser bundle drives /teammates add', clientSource.includes('/teammates add '));
 check('the browser bundle has no retire control', !clientSource.includes('title: t("memberRetire")'));
+check('the browser bundle has no re-route confirm flow', !clientSource.includes('t("memberModelRebuild")'));
+check('the browser bundle mounts no rest switch', !/\}\)\(TeamRestSwitch, \{/.test(clientSource));
+check('the browser bundle mounts no local-model gate', !/\}\)\(LocalModelGate, \{/.test(clientSource));
 
 let entry;
 globalThis.window = { __ModuleLoader__: { load: (value) => { entry = value; } } };

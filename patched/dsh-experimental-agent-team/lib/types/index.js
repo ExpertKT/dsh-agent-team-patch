@@ -177,6 +177,22 @@ export class TeamService extends Service {
         return this.roster.retire(caller, targetName);
     }
     /**
+     * Put every active teammate to rest: no turn can start until wakeTeam.
+     * @param caller - exact live Lead Agent.
+     * @returns the names put to rest.
+     */
+    restTeam(caller) {
+        return this.roster.rest(caller);
+    }
+    /**
+     * Wake every resting teammate.
+     * @param caller - exact live Lead Agent.
+     * @returns the names woken.
+     */
+    wakeTeam(caller) {
+        return this.roster.wake(caller);
+    }
+    /**
      * Resolve a caller without throwing, used by scoped-tool installation and observers.
      * @param agent - candidate exact live Agent.
      * @returns Team membership, or undefined for non-Team subagents and stale identities.

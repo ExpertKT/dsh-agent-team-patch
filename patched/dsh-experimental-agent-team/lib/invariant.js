@@ -194,7 +194,8 @@ const teamMemberSnapshotSchema = z.object({
 		"provisioning",
 		"active",
 		"failed",
-		"retired"
+		"retired",
+		"resting"
 	]),
 	error: z.string().optional()
 }).strict();
@@ -344,7 +345,9 @@ function applyCurrentTeamEvent(state, event) {
 				if (prior.name !== member.name || prior.provider !== member.provider || prior.context !== member.context) throw new Error(`teammate "${member.id}" changed immutable identity fields`);
 				const settles = prior.phase === "provisioning" && (member.phase === "active" || member.phase === "failed");
 				const retires = member.phase === "retired" && (prior.phase === "active" || prior.phase === "failed");
-				if (!settles && !retires) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
+				const rests = member.phase === "resting" && prior.phase === "active";
+				const wakes = member.phase === "active" && prior.phase === "resting";
+				if (!settles && !retires && !rests && !wakes) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
 			}
 			return {
 				...state,
@@ -400,7 +403,8 @@ const teamMemberProjectionSchema = z.object({
 		"provisioning",
 		"active",
 		"failed",
-		"retired"
+		"retired",
+		"resting"
 	]),
 	error: z.string().optional()
 }).strict();

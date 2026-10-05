@@ -260,3 +260,85 @@ Gateway routing budget expired before an upstream attempt could start
 另：本机**没装 `pwsh`**（`$PSVersionTable.PSVersion = 5.1.26100.9444`），`start-shudong.cmd` 永远走 Windows PowerShell 5.1 分支 —— 这条兜底是对的、已验证可用（`[Parser]::ParseFile` → `PARSE_ERRORS=0`；冷启动 exit 0 / 4s；二次运行幂等不重起：`8787 已经有人在听 —— 不动它。`）。
 
 **未验证声明**：网上流传的「DSH 团队补丁已在真实项目里端到端跑通」不适用于本文件 P2（名字复用）—— 那条只过了离线断言，真机验证待下一次重启。
+
+---
+
+## 附录 B：团队级「开工 / 休息」开关 + 本地模型闸口上面板（2026-10-05 晚，同一批热补丁）
+
+### B.0 需求与两条不同的「停」
+
+用户在 20:5x 提出两件**不同**的事，别混为一谈：
+
+1. **本地模型闸口**（`F:\shudong\tools\llm-gate.mjs`，状态 `F:\shudong\data\llm-gate.json`，三态 `off/product/on`，代理 `11499 → 11434`）：控制**述洞这个产品**能不能调本地推理。它管的是「跑模型把电脑跑卡」。
+2. **团队休息**（本附录 B 的主体）：控制**DSH 队友还能不能干活**。用户原话（m14469）：「我指的休息是整个团队不工作，不是不调用本地模型，是不工作」⇒ Lead 自己那轮（用户与 Lead 的对话）不受影响，被停的是**所有队友**。
+
+闸口的真 bug 也已修：原判据 `state.mode === 'on' || kind === 'readonly' ? allow : kind === 'infer' && modelAllowed ? allow : deny` 让 `off` 与 `product` 路由**完全一样**，「关闭」根本停不下来。现改成只读永远放行、`on` 全放行、`product` 只放行 `allow` 名单里的推理、`off` 全部推理拒（HTTP 503 +【休息】文案）。实测：`off + qwen3.5:9b → 503【休息】`、`GET /api/tags → 200`、`product + 不在名单的模型 → 503【只准产品】`。
+
+闸口也上了 DSH 面板（`client.js` 的 `LocalModelGate`，`const GATE_BASE = "http://127.0.0.1:11499"`，5 秒轮询 `/gate/state`，三按钮 `开工 → on` / `只准产品 → product` / `休息 → off`）。因为面板页面源是 `http://127.0.0.1:43120`，`llm-gate.mjs` 的请求入口对 `p.startsWith('/gate')` 单独加了 `access-control-allow-origin: * / -headers: * / -methods: GET,POST,OPTIONS`，`OPTIONS` 直接 204 —— 只作用于 `/gate*`，代理路径不加头。已用 `curl -H "Origin: http://127.0.0.1:43120"` 验过响应带足三个 CORS 头。
+
+### B.1 团队休息的机制（决定与理由）
+
+加一个成员相位 `resting`，而不是新造一个「团队级开关」事件或外部状态文件。理由：退役（retired）补丁已经把**相位枚举 / 重放守卫 / 投影 / 席位与名字检查**这套机器铺好了，复用最省，而且状态随 journal 持久（重启后仍在休息）。
+
+- 休息 = 把所有 `phase === 'active'` 的队友逐条翻成 `resting`，并 `ctx.subagents.interrupt(member.id, {kind:'ancestor', agent: caller})` 打断正在跑的那一轮（只对 live 的）。
+- **机械闸门**：`resolveActiveMember` 只认 `phase === 'active'` ⇒ 休息成员**不可寻址**，`send_message` / `interrupt_agent` 的 target 解析直接抛 `TEAM_MEMBER_RESTING`（文案：`teammate "<name>" is resting — the Team is not working; the Lead must run /team work first`）⇒ 队友的 turn 根本起不来。即使有排队消息漏进来，`TeamRoster.tryMembership` 对队友只在 `phase === 'active' || 'provisioning'` 时给成员身份（`types\roster.js:88`）⇒ 它的 team 工具也用不了。**Lead 不受影响**（`tryMembership` 对 Lead 走 `types\roster.js:105` 直接返回 `{role:'lead'}`）。
+- 名字与席位判据用的是 `phase !== 'retired'`（`types\roster.js:284/287`、`lib\index.js:607/608`）⇒ resting **仍占名字与席位**（有意：不能被别人顶掉，`/team add` 同名会被拒）。
+
+### B.2 改动清单（七个文件，全部 `node --check` / 复制成 `.cjs` 后 `node --check` exit 0）
+
+| 文件（`resources\app\node_modules\` 下） | 字节 | sha256（2026-10-05 晚） |
+|---|---|---|
+| `@deepseek-ai\dsh-experimental-agent-team\lib\index.js` | 78173 | `eb1bf4b18fe0910b3bb0355273a72f436149e9720ddd8267583c4d574226ce27` |
+| `@deepseek-ai\dsh-experimental-agent-team\lib\invariant.js` | 18698 | `ebecdc80ea7e22c57622d0632be2df845b6500ab745262a3b3d01318e461ea14` |
+| `@deepseek-ai\dsh-experimental-agent-team\lib\types\roster.js` | 25617 | `a46d4a5f438995888cdc1d951007fa26e3dc6f03cde74536ed97f2c5886cc739` |
+| `@deepseek-ai\dsh-experimental-agent-team\lib\types\projection.js` | 14314 | `e211ddfe1f485762b458c2d8555afdb6d9aff4d5326114e7d279ec99b2dab059` |
+| `@deepseek-ai\dsh-experimental-agent-team\lib\types\index.js` | 10515 | `501c697b1cd668b7dce85cab7c16f24034dc38a26347f6c6532ac2f75608fe6f` |
+| `@deepseek-ai\dsh-experimental-tool-agent-team\lib\index.js` | 28368 | `11c801a7da9432e21e8e910c7fdb1f21ea57e3821d0f628ce7bb166455d2ac7a` |
+| `@deepseek-ai\dsh-experimental-client-ui-agent-team\lib\client.js` | 48054 | `8a94196e39838fef40bee5d0488eeae684d78642fae62a1c75f2009276373f36` |
+
+改了哪些地方：
+1. `invariant.js`：两处 `phase: z.enum([...])` 各加 `"resting"`；`team/member` 重放守卫加两条合法边
+   `const rests = member.phase === "resting" && prior.phase === "active";`、`const wakes = member.phase === "active" && prior.phase === "resting";`，判据变 `if (!settles && !retires && !rests && !wakes) throw ...`。
+2. `agent-team\lib\index.js`：`resolveActiveMember` 找不到 active 时先查 resting 并抛 `TEAM_MEMBER_RESTING`；`list` 的 status 三级（running/inactive/failed 之外的 phase）增加 `resting`；两处 `z$1.enum` 加 `"resting"`；新增 `TeamRoster.rest(caller)` / `wake(caller)`（`retire` 之后）；facade 加 `restTeam`/`wakeTeam`。
+3. `types\roster.js`：第 2 项的镜像（`resolveActiveMember` 同一句 + `list` 状态 + `rest`/`wake`）。
+4. `types\projection.js`：两处单行 `phase: z.enum(['provisioning','active','failed','retired'])` 加 `'resting'`；replay 守卫同上。
+5. `types\index.js`：facade `restTeam`/`wakeTeam` 委托 `this.roster.rest/wake`。
+6. `tool-agent-team\lib\index.js`：`parseTeamCommand` 加 `rest` / `work`（必须无参数，带参报 usage）；usage 文案改成 `list | retire <name> | rest | work | model ...`；`executeTeamCommand` 两分支（成功文案 `the Team is resting: a, b — no teammate turn can start until /team work` / `the Team is working again: a, b`；空集时 `the Team was already at rest` / `... already working`）。
+7. `client.js`：`//#region lead: 团队休息开关（休息 = 全队不干活）` 里的 `function TeamRestSwitch({ team, leadSessionId, runTeamCommand, t })`，两个按钮分别发 `/team work` / `/team rest`（走 `runTeamCommand(leadSessionId, "/team ...")`，与 `retireMember` 同路，`client.js:467-470`）；另加 `memberStatus.resting`（zh「休息中」/ en「Resting」）、`memberStatusKey` 的 `case "resting"`、`memberDotState` 的 `case "resting": return "warning"`，以及 zh/en 的 `team.title/work/rest/working/resting/fail/hint` 七对键。**面板的成员状态取自 `member.phase` 而不是 `member.status`**（`client.js:120`），所以判定必须用 `member.phase === "resting"`。
+
+### B.3 验证状态
+
+- **已验（离线）**：
+  - `node F:\dsh-team\checks\rest-check.mjs` → `REST-CHECK OK`，**14/14 PASS，exit 0**。覆盖：`active -> resting` / `resting -> active` 合法；`provisioning -> resting`、`retired -> resting` 被拒；休息成员不可寻址（`TEAM_MEMBER_RESTING`）；休息成员的名字不能被别人顶；投影里 resting 成员仍在（没被藏起来）；`rest(lead)` 返回 `{resting:["foreman","baren-luna"]}` 且只打断 live 的那个（1 次 interrupt）；`roster.list(membership)` 里 `status === 'resting'`；`wake(lead)` 返回 `{woken:[...]}`、两人回 active、不再 interrupt。脚本可用 `DSH_APP_ROOT` 覆盖安装根。
+  - `node F:\dsh-team\checks\team-command-check.mjs` → `TEAM-COMMAND-CHECK OK（失败 0 项）`，**64 项 PASS，exit 0**（在原有的 `/team list|add|retire|model` 覆盖上加了 `rest`/`work`：成功文案、把每个队友名列出来、`/team work` 提示、服务调用顺序 `rest,work`、usage hint 含 rest/work，以及 `rest now` / `rest --` / `work --` / `work b1` 四条拒绝路径）。
+- **未验（真机）**：后端包只在 DSH 启动时装载 ⇒ 必须**重启 DSH** 才生效；`/team rest`、`/team work`、面板按钮与「休息中」徽标都还没有真机证据。重启会把述洞的 8787 / 5173 / 11499 一起带走，需按老办法复原（见附录 A 的启动器）。
+- **面板渲染**：`http://127.0.0.1:43120` 带 authority 绑定签名 cookie 认证（无 cookie 是 401，`dsh-client-connection\lib\index.js:449`），launch token 只在桌面进程内 ⇒ headless 浏览器**验不了**，只能人眼看。
+
+### B.4 已知代价
+
+热补丁会在 DSH 更新时被覆盖；resting 写在 journal 里 ⇒ 重启后仍在休息；若降级回原版 DSH，journal 里的 resting 事件会让 replay 校验失败（这是「改 node_modules」这类补丁的通用代价，不是本功能独有）。
+
+
+### B.5 交接提醒（Lead 停手前最后一条，2026-10-06 00:45）
+
+**用户 2026-10-06 拍板**：团队「开工 / 休息」这类插件与团队管理改动，交给**负责开发这个插件的会话**（本仓库的主人）；Lead（另一个会话）停手，不再直接改 DSH 安装目录。所以下面这几条是给接手会话的：
+
+1. **盘上是已经改完的状态**：真实安装目录 `F:\DSHDesktop\DSH Desktop\resources\app\node_modules\` 下的七个文件已含 resting 改动，字节数与 sha256 见 B.2；DSH 主进程已于 **00:31:53** 重启（晚于最后改动 20:40:51）⇒ 新代码已装载。
+2. **本仓库的 `patched\` 与 `patches\` 是旧的**：`patched\` 七个文件 mtime 16:01–19:54、`patches\*.patch` 三个都 19:56:19，都生成于 resting 改动（20:40）之前 ⇒ **不含 resting**。接手时要么用 `tools\` 里的脚本重新生成，要么直接以安装目录为准。Lead 有意**没有**碰 `patched\`、`patches\`、`baseline\`、`tools\`、`lib\`，避免与并发工作撞车。
+   - **（接手会话 2026-10-06 补）已并入**：`node tools\build-manifest.mjs --write` 已按安装目录重生成 `patched\`/`patches\`/`manifest.json`/`baseline\`（7 文件、3 包）—— 收进了 B.0–B.2 的 resting 与本地模型闸口，也收进了 B.6 那次 `StateDot` 小修（冻结的就是 `00861893dac8…` / 48137 B 那一版）；`lib/panel/client.js` 重新生成并把这些控件切掉；真机安装目录上 `apply.mjs --check` = `PATCHED patched=7 pristine=0 drift=0 missing=0` + `WIRED`（exit 0），9 个检查全绿。上面第 2、3 条里「旧 / 只有两个检查」的描述已被这次重生成覆盖。
+3. **离线检查可以直接跑**：`node F:\dsh-team\checks\rest-check.mjs` → `REST-CHECK OK`（14/14，exit 0）；`node F:\dsh-team\checks\team-command-check.mjs` → 64/64（exit 0）。两个都在本仓库 `checks\` 里。
+4. **还没验的只有两件**：真机打 `/team rest` / `/team work`（Lead 没有替用户发斜杠命令的工具，斜杠命令只能从输入框或面板走 `runTeamCommand`）与面板渲染人眼看（`http://127.0.0.1:43120` 是签名 cookie 认证，headless 打是 401）。
+5. **已知代价**：热补丁会被 DSH 更新覆盖；resting 写在 journal 里 ⇒ 重启后仍在休息；若降级回原版 DSH，journal 里的 resting 事件会让 replay 校验失败。
+6. 同一批里的**本地模型闸口面板**（`/gate` 三态 + DSH 面板三个按钮）也在 B.0/B.2 里，同样移交。
+
+### B.6 面板「一直在转」的小修（Lead 2026-10-06 00:5x，同样要重新生成才进补丁）
+
+用户反馈「开工中一直在转，这样没开始干活啊」。查清是**纯显示问题**，不是功能坏了：
+
+- 原因：我给两块面板的状态行用了 `StateDot state="ongoing"`，而 `ongoing` 在 `dsh-client-ui-primitives` 里**是唯一的转圈状态**（`StateDot.module.css`：`ongoing` = SVG + `dsh-state-dot-spin` 无限旋转；其余 `idle/done/warning/error` 都是静态点）。所以只要模式不是休息，那个点就永远转 —— 看着像"没干完/在加载"。
+- 改法（`@deepseek-ai\dsh-experimental-client-ui-agent-team\lib\client.js`，改后 48137 B sha256 `00861893dac814687b393812db983a3f7b36166c573ebdb28dce36e71e82d02d`，`node --check` exit 0）：
+  1. 闸口面板：`state: error !== null ? "error" : mode === "off" || mode === void 0 ? "warning" : "ongoing"` → 末项 `"done"`（静态绿点）。
+  2. 团队面板：`state: error !== null ? "error" : allRest ? "warning" : "ongoing"` → `... allRest ? "warning" : teammates.length === 0 ? "idle" : "done"`。
+  3. 文案诚实化：zh `team.working` = 「开工中 —— {count} 位队友在岗（有派活才动手）」、en = `"Working — {count} teammate(s) on duty (they only move when assigned)"` —— 「在岗」不等于「在干活」，避免再被误读。
+- 这一条在 `patched\`/`patches\` 里同样**不存在**，重生成时一并以安装目录为准。
+- 另：`ongoing` 在该 bundle 里还剩 3 处，都是原包自带的，不是我加的（我只动了上面两处）。

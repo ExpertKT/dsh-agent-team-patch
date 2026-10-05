@@ -48,6 +48,9 @@ check("factory is a function", typeof entry?.factory === "function");
 const realReact = requireFromApp("react");
 let hookOverrides = null;
 let hookCursor = 0;
+// Every hook the bundle may reach for needs a callable stub here: a real hook
+// (e.g. `useCallback`) called outside a renderer dereferences a null dispatcher
+// and kills the whole check, which looks like a panel bug but is a harness gap.
 const reactStub = {
 	...realReact,
 	useState: (initial) => {
@@ -55,9 +58,20 @@ const reactStub = {
 		hookCursor += 1;
 		return [override === void 0 ? initial : override, () => void 0];
 	},
+	useReducer: (reducer, initial) => [typeof initial === "function" ? initial() : initial, () => void 0],
 	useRef: (initial) => ({ current: initial === void 0 ? null : initial }),
 	useEffect: () => void 0,
-	useLayoutEffect: () => void 0
+	useLayoutEffect: () => void 0,
+	useInsertionEffect: () => void 0,
+	useMemo: (create) => create(),
+	useCallback: (callback) => callback,
+	useContext: () => ({}),
+	useId: () => "check",
+	useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+	useTransition: () => [false, (run) => run()],
+	useDeferredValue: (value) => value,
+	useImperativeHandle: () => void 0,
+	useDebugValue: () => void 0
 };
 const stubs = new Map([
 	["react", reactStub],
@@ -212,6 +226,7 @@ try {
 check("the panel renders a member with no model selection", renderError === void 0, String(renderError));
 check("the render walk reached the roster rows", visited.includes("TeamAction") && visited.includes("TeamMemberRow"), JSON.stringify([...new Set(visited)]));
 check("the render walk reached the task cards", visited.includes("TaskCard"), JSON.stringify([...new Set(visited)]));
+check("the render walk reached the rest switch and the local-model gate", visited.includes("TeamRestSwitch") && visited.includes("LocalModelGate"), JSON.stringify([...new Set(visited)]));
 
 // --- switching a model is a confirmed rebuild, not an in-place selection ---
 // A teammate's route is frozen into its subagent descriptor when its Session is

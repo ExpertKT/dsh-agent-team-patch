@@ -7,51 +7,51 @@
     {
       "package": "dsh-experimental-agent-team",
       "path": "lib/index.js",
-      "bytes": 75450,
+      "bytes": 78173,
       "pristine": "7e8122ed7ae6723dc5152af32cc62b592f5c39a36a88dc71f280fd332c815419",
-      "patched": "9ba60879db0dae00b119f602882b533c6fbbcbceb872a7702382bd0177424107"
+      "patched": "eb1bf4b18fe0910b3bb0355273a72f436149e9720ddd8267583c4d574226ce27"
     },
     {
       "package": "dsh-experimental-agent-team",
       "path": "lib/invariant.js",
-      "bytes": 18504,
+      "bytes": 18698,
       "pristine": "1c9cd7fb3244adfed303bfdb5119c799083ec5291b685d92d5e68d0998752a02",
-      "patched": "fe223b36a3b9087f3c979018e40406f99aacd85fb214afef190e7549466b30f5"
+      "patched": "ebecdc80ea7e22c57622d0632be2df845b6500ab745262a3b3d01318e461ea14"
     },
     {
       "package": "dsh-experimental-agent-team",
       "path": "lib/types/index.js",
-      "bytes": 10067,
+      "bytes": 10515,
       "pristine": "60873a170ef2132b5c2e8bea8a3a0220719eff68b4e830c677d1280071b63035",
-      "patched": "d737e78744fce5a040970f6c4057f1135a99e9c9c11fbefd0d93fbafc6bf8da4"
+      "patched": "501c697b1cd668b7dce85cab7c16f24034dc38a26347f6c6532ac2f75608fe6f"
     },
     {
       "package": "dsh-experimental-agent-team",
       "path": "lib/types/projection.js",
-      "bytes": 14100,
+      "bytes": 14314,
       "pristine": "7240e25bceae67312c7b0253f6fb725794104595f10e94c4ffb899c869c0f247",
-      "patched": "682fb4f0268e94446c120763a7cd4681c7e10a7a395f3979773a85e62556c6ba"
+      "patched": "e211ddfe1f485762b458c2d8555afdb6d9aff4d5326114e7d279ec99b2dab059"
     },
     {
       "package": "dsh-experimental-agent-team",
       "path": "lib/types/roster.js",
-      "bytes": 23163,
+      "bytes": 25617,
       "pristine": "9fe386eb529a7432a475b309ff827e601f03ac3a605595758d6c840bbe220ea5",
-      "patched": "34fbbcc7049345db3b8ec0f544e18468bbb6f203c063122a948c1d6fa8bf12dc"
+      "patched": "a46d4a5f438995888cdc1d951007fa26e3dc6f03cde74536ed97f2c5886cc739"
     },
     {
       "package": "dsh-experimental-client-ui-agent-team",
       "path": "lib/client.js",
-      "bytes": 39548,
+      "bytes": 48137,
       "pristine": "3a679458016b30b3374329c8470902b6293209a4084ece33c1b5ec29699e35c4",
-      "patched": "8507acfb8f0674f5fe41f40ef30de994bd817a5ee8bf612c95491deac45bcfb2"
+      "patched": "00861893dac814687b393812db983a3f7b36166c573ebdb28dce36e71e82d02d"
     },
     {
       "package": "dsh-experimental-tool-agent-team",
       "path": "lib/index.js",
-      "bytes": 27527,
+      "bytes": 28368,
       "pristine": "cafdbb7a050431b17251527789d0fcb2e9b95c006a7513786c2c43fea3aca937",
-      "patched": "eb149f033207189c18c8f91f0285fdfae4f310e33bd167f0cc3e524453fe88e3"
+      "patched": "11c801a7da9432e21e8e910c7fdb1f21ea57e3821d0f628ce7bb166455d2ac7a"
     }
   ]
 }

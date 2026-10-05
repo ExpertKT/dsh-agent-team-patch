@@ -1,19 +1,23 @@
 diff --git a/a/lib/index.js b/b/lib/index.js
-index d1c4527..848ed5f 100644
+index d1c4527..f4eeaf0 100644
 --- a/a/lib/index.js
 +++ b/b/lib/index.js
-@@ -353,8 +353,8 @@ function resolveActiveMember(root, state, rawName) {
+@@ -353,8 +353,12 @@ function resolveActiveMember(root, state, rawName) {
  		id: root.id,
  		name
  	};
 -	const member = state.members.find((candidate) => candidate.name === name);
 -	if (member === void 0 || member.phase !== "active") throw new TeamError(`active teammate "${name}" not found`, "TEAM_MEMBER_NOT_FOUND");
 +	const member = state.members.find((candidate) => candidate.name === name && candidate.phase === "active");
-+	if (member === void 0) throw new TeamError(`active teammate "${name}" not found`, "TEAM_MEMBER_NOT_FOUND");
++	if (member === void 0) {
++		const resting = state.members.find((candidate) => candidate.name === name && candidate.phase === "resting");
++		if (resting !== void 0) throw new TeamError(`teammate "${name}" is resting — the Team is not working; the Lead must run /team work first`, "TEAM_MEMBER_RESTING");
++		throw new TeamError(`active teammate "${name}" not found`, "TEAM_MEMBER_NOT_FOUND");
++	}
  	return {
  		id: member.id,
  		name
-@@ -399,7 +399,18 @@ var TeamRoster = class {
+@@ -399,7 +403,18 @@ var TeamRoster = class {
  		try {
  			const parentId = agent.session.header.parentSession;
  			if (parentId !== void 0) {
@@ -33,7 +37,7 @@ index d1c4527..848ed5f 100644
  				if (root !== void 0) {
  					const member = this.journal.state(root).members.find((candidate) => candidate.id === agent.id);
  					if (member?.phase === "active" || member?.phase === "provisioning") return {
-@@ -445,6 +456,7 @@ var TeamRoster = class {
+@@ -445,13 +460,14 @@ var TeamRoster = class {
  			diagnostics: []
  		}];
  		for (const member of state.members) {
@@ -41,7 +45,15 @@ index d1c4527..848ed5f 100644
  			const live = this.ctx.agents.get(member.id);
  			const model = live?.options.model ?? root.options.model;
  			result.push({
-@@ -464,7 +476,8 @@ var TeamRoster = class {
+ 				id: member.id,
+ 				name: member.name,
+ 				role: "teammate",
+-				status: member.phase === "failed" ? "failed" : member.phase === "provisioning" ? "provisioning" : availability(live),
++				status: member.phase === "failed" ? "failed" : member.phase === "provisioning" ? "provisioning" : member.phase === "resting" ? "resting" : availability(live),
+ 				description: member.description,
+ 				provider: member.provider,
+ 				context: member.context,
+@@ -464,7 +480,8 @@ var TeamRoster = class {
  	/**
  	* Create one named, continuable direct child of the Team Lead.
  	* @param caller - exact live Lead Agent.
@@ -51,7 +63,7 @@ index d1c4527..848ed5f 100644
  	* @returns the active roster row.
  	*/
  	async spawn(caller, request) {
-@@ -516,6 +529,37 @@ var TeamRoster = class {
+@@ -516,6 +533,90 @@ var TeamRoster = class {
  		return { previousStatus };
  	}
  	/**
@@ -86,10 +98,63 @@ index d1c4527..848ed5f 100644
 +		return { previousStatus };
 +	}
 +	/**
++	* Put every active teammate to rest: each one stays on the roster but can no
++	* longer be addressed, so no teammate turn can start until the Lead wakes it.
++	* Reversible with wake(). Live turns are interrupted.
++	* @param caller - exact live Lead Agent.
++	* @returns the names put to rest.
++	*/
++	async rest(caller) {
++		const membership = this.membership(caller);
++		if (membership.role !== "lead") throw new TeamError("only the Team Lead can rest the team", "TEAM_LEAD_REQUIRED");
++		const root = membership.root;
++		const state = this.journal.state(root);
++		const sleeping = state.members.filter((member) => member.phase === "active");
++		for (const member of sleeping) {
++			await this.journal.appendAndFlush(root, "team/member", {
++				version: 2,
++				teamId: TeamId(root.id),
++				member: {
++					...member,
++					phase: "resting"
++				}
++			});
++			const live = this.ctx.agents.get(member.id);
++			if (live !== void 0) this.ctx.subagents.interrupt(member.id, {
++				kind: "ancestor",
++				agent: caller
++			});
++		}
++		return { resting: sleeping.map((member) => member.name) };
++	}
++	/**
++	* Wake every resting teammate: back to active, addressable again.
++	* @param caller - exact live Lead Agent.
++	* @returns the names woken.
++	*/
++	async wake(caller) {
++		const membership = this.membership(caller);
++		if (membership.role !== "lead") throw new TeamError("only the Team Lead can wake the team", "TEAM_LEAD_REQUIRED");
++		const root = membership.root;
++		const state = this.journal.state(root);
++		const woken = state.members.filter((member) => member.phase === "resting");
++		for (const member of woken) {
++			await this.journal.appendAndFlush(root, "team/member", {
++				version: 2,
++				teamId: TeamId(root.id),
++				member: {
++					...member,
++					phase: "active"
++				}
++			});
++		}
++		return { woken: woken.map((member) => member.name) };
++	}
++	/**
  	* Group exact live roster children by their current Lead for runtime teardown.
  	* @returns each live Lead and the roster child ids currently in the Agent registry.
  	*/
-@@ -560,8 +604,8 @@ var TeamRoster = class {
+@@ -560,8 +661,8 @@ var TeamRoster = class {
  		};
  		await this.journal.transact(root.id, async () => {
  			const state = this.journal.state(root);
@@ -100,7 +165,7 @@ index d1c4527..848ed5f 100644
  			await this.journal.appendAndFlush(root, "team/member", {
  				version: 2,
  				teamId: TeamId(root.id),
-@@ -576,7 +620,8 @@ var TeamRoster = class {
+@@ -576,7 +677,8 @@ var TeamRoster = class {
  				label: description,
  				request: {
  					prompt: request.prompt,
@@ -110,17 +175,18 @@ index d1c4527..848ed5f 100644
  				},
  				signal
  			});
-@@ -1152,7 +1197,8 @@ const teamMemberSnapshotSchema = z$1.object({
+@@ -1152,7 +1254,9 @@ const teamMemberSnapshotSchema = z$1.object({
  	phase: z$1.enum([
  		"provisioning",
  		"active",
 -		"failed"
 +		"failed",
-+		"retired"
++		"retired",
++		"resting"
  	]),
  	error: z$1.string().optional()
  }).strict();
-@@ -1294,13 +1340,15 @@ function applyCurrentTeamEvent(state, event) {
+@@ -1294,13 +1398,17 @@ function applyCurrentTeamEvent(state, event) {
  			const member = event.data.member;
  			const index = state.members.findIndex((candidate) => candidate.id === member.id);
  			const prior = state.members[index];
@@ -134,21 +200,24 @@ index d1c4527..848ed5f 100644
 -				if (prior.phase !== "provisioning" || member.phase === "provisioning") throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
 +				const settles = prior.phase === "provisioning" && (member.phase === "active" || member.phase === "failed");
 +				const retires = member.phase === "retired" && (prior.phase === "active" || prior.phase === "failed");
-+				if (!settles && !retires) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
++				const rests = member.phase === "resting" && prior.phase === "active";
++				const wakes = member.phase === "active" && prior.phase === "resting";
++				if (!settles && !retires && !rests && !wakes) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
  			}
  			return {
  				...state,
-@@ -1355,7 +1403,8 @@ const teamMemberProjectionSchema = z$1.object({
+@@ -1355,7 +1463,9 @@ const teamMemberProjectionSchema = z$1.object({
  	phase: z$1.enum([
  		"provisioning",
  		"active",
 -		"failed"
 +		"failed",
-+		"retired"
++		"retired",
++		"resting"
  	]),
  	error: z$1.string().optional()
  }).strict();
-@@ -1390,13 +1439,16 @@ function buildTeamProjection(state) {
+@@ -1390,13 +1500,16 @@ function buildTeamProjection(state) {
  		role: "lead",
  		phase: "active"
  	}];
@@ -172,7 +241,7 @@ index d1c4527..848ed5f 100644
  	return {
  		members,
  		tasks: state.tasks.filter((task) => task.status !== "deleted").map((task) => projectTaskView(state, task)),
-@@ -1829,6 +1881,15 @@ var TeamService = class extends Service {
+@@ -1829,6 +1942,31 @@ var TeamService = class extends Service {
  		return this.roster.interrupt(caller, targetName);
  	}
  	/**
@@ -185,24 +254,41 @@ index d1c4527..848ed5f 100644
 +		return this.roster.retire(caller, targetName);
 +	}
 +	/**
++	* Put every active teammate to rest (no turn can start until woken).
++	* @param caller - exact live Lead Agent.
++	* @returns the names put to rest.
++	*/
++	restTeam(caller) {
++		return this.roster.rest(caller);
++	}
++	/**
++	* Wake every resting teammate.
++	* @param caller - exact live Lead Agent.
++	* @returns the names woken.
++	*/
++	wakeTeam(caller) {
++		return this.roster.wake(caller);
++	}
++	/**
  	* Resolve a caller without throwing, used by scoped-tool installation and observers.
  	* @param agent - candidate exact live Agent.
  	* @returns Team membership, or undefined for non-Team subagents and stale identities.
 diff --git a/a/lib/invariant.js b/b/lib/invariant.js
-index 7f6e902..5702b89 100644
+index 7f6e902..75354a7 100644
 --- a/a/lib/invariant.js
 +++ b/b/lib/invariant.js
-@@ -193,7 +193,8 @@ const teamMemberSnapshotSchema = z.object({
+@@ -193,7 +193,9 @@ const teamMemberSnapshotSchema = z.object({
  	phase: z.enum([
  		"provisioning",
  		"active",
 -		"failed"
 +		"failed",
-+		"retired"
++		"retired",
++		"resting"
  	]),
  	error: z.string().optional()
  }).strict();
-@@ -335,13 +336,15 @@ function applyCurrentTeamEvent(state, event) {
+@@ -335,13 +337,17 @@ function applyCurrentTeamEvent(state, event) {
  			const member = event.data.member;
  			const index = state.members.findIndex((candidate) => candidate.id === member.id);
  			const prior = state.members[index];
@@ -216,21 +302,24 @@ index 7f6e902..5702b89 100644
 -				if (prior.phase !== "provisioning" || member.phase === "provisioning") throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
 +				const settles = prior.phase === "provisioning" && (member.phase === "active" || member.phase === "failed");
 +				const retires = member.phase === "retired" && (prior.phase === "active" || prior.phase === "failed");
-+				if (!settles && !retires) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
++				const rests = member.phase === "resting" && prior.phase === "active";
++				const wakes = member.phase === "active" && prior.phase === "resting";
++				if (!settles && !retires && !rests && !wakes) throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
  			}
  			return {
  				...state,
-@@ -396,7 +399,8 @@ const teamMemberProjectionSchema = z.object({
+@@ -396,7 +402,9 @@ const teamMemberProjectionSchema = z.object({
  	phase: z.enum([
  		"provisioning",
  		"active",
 -		"failed"
 +		"failed",
-+		"retired"
++		"retired",
++		"resting"
  	]),
  	error: z.string().optional()
  }).strict();
-@@ -431,13 +435,16 @@ function buildTeamProjection(state) {
+@@ -431,13 +439,16 @@ function buildTeamProjection(state) {
  		role: "lead",
  		phase: "active"
  	}];
@@ -255,10 +344,10 @@ index 7f6e902..5702b89 100644
  		members,
  		tasks: state.tasks.filter((task) => task.status !== "deleted").map((task) => projectTaskView(state, task)),
 diff --git a/a/lib/types/index.js b/b/lib/types/index.js
-index 26ad6b7..ff867eb 100644
+index 26ad6b7..78c1e74 100644
 --- a/a/lib/types/index.js
 +++ b/b/lib/types/index.js
-@@ -167,6 +167,15 @@ export class TeamService extends Service {
+@@ -167,6 +167,31 @@ export class TeamService extends Service {
      interrupt(caller, targetName) {
          return this.roster.interrupt(caller, targetName);
      }
@@ -271,11 +360,27 @@ index 26ad6b7..ff867eb 100644
 +    retireTeammate(caller, targetName) {
 +        return this.roster.retire(caller, targetName);
 +    }
++    /**
++     * Put every active teammate to rest: no turn can start until wakeTeam.
++     * @param caller - exact live Lead Agent.
++     * @returns the names put to rest.
++     */
++    restTeam(caller) {
++        return this.roster.rest(caller);
++    }
++    /**
++     * Wake every resting teammate.
++     * @param caller - exact live Lead Agent.
++     * @returns the names woken.
++     */
++    wakeTeam(caller) {
++        return this.roster.wake(caller);
++    }
      /**
       * Resolve a caller without throwing, used by scoped-tool installation and observers.
       * @param agent - candidate exact live Agent.
 diff --git a/a/lib/types/projection.js b/b/lib/types/projection.js
-index 41aaf80..bf7a664 100644
+index 41aaf80..c5531b4 100644
 --- a/a/lib/types/projection.js
 +++ b/b/lib/types/projection.js
 @@ -49,7 +49,7 @@ const teamMemberSnapshotSchema = z.object({
@@ -283,7 +388,7 @@ index 41aaf80..bf7a664 100644
      provider: z.string(),
      context: z.enum(['fresh', 'fork']),
 -    phase: z.enum(['provisioning', 'active', 'failed']),
-+    phase: z.enum(['provisioning', 'active', 'failed', 'retired']),
++    phase: z.enum(['provisioning', 'active', 'failed', 'retired', 'resting']),
      error: z.string().optional(),
  }).strict();
  const teamTaskSnapshotSchema = z.object({
@@ -296,27 +401,29 @@ index 41aaf80..bf7a664 100644
              if (named !== undefined && named.id !== member.id) {
                  throw new Error(`teammate name "${member.name}" is reused by another member`);
              }
-@@ -199,7 +199,9 @@ function applyCurrentTeamEvent(state, event) {
+@@ -199,7 +199,11 @@ function applyCurrentTeamEvent(state, event) {
                  if (prior.name !== member.name || prior.provider !== member.provider || prior.context !== member.context) {
                      throw new Error(`teammate "${member.id}" changed immutable identity fields`);
                  }
 -                if (prior.phase !== 'provisioning' || member.phase === 'provisioning') {
 +                const settles = prior.phase === 'provisioning' && (member.phase === 'active' || member.phase === 'failed');
 +                const retires = member.phase === 'retired' && (prior.phase === 'active' || prior.phase === 'failed');
-+                if (!settles && !retires) {
++                const rests = member.phase === 'resting' && prior.phase === 'active';
++                const wakes = member.phase === 'active' && prior.phase === 'resting';
++                if (!settles && !retires && !rests && !wakes) {
                      throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
                  }
              }
-@@ -250,7 +252,7 @@ const teamMemberProjectionSchema = z.object({
+@@ -250,7 +254,7 @@ const teamMemberProjectionSchema = z.object({
      id: sessionIdSchema,
      name: z.string(),
      role: z.enum(['lead', 'teammate']),
 -    phase: z.enum(['provisioning', 'active', 'failed']),
-+    phase: z.enum(['provisioning', 'active', 'failed', 'retired']),
++    phase: z.enum(['provisioning', 'active', 'failed', 'retired', 'resting']),
      error: z.string().optional(),
  }).strict();
  const teamTaskViewSchema = z.object({
-@@ -276,6 +278,8 @@ function buildTeamProjection(state) {
+@@ -276,6 +280,8 @@ function buildTeamProjection(state) {
      const rootId = brandString(state.id);
      const members = [{ id: rootId, name: 'lead', role: 'lead', phase: 'active' }];
      for (const member of state.members) {
@@ -326,10 +433,10 @@ index 41aaf80..bf7a664 100644
              id: member.id,
              name: member.name,
 diff --git a/a/lib/types/roster.js b/b/lib/types/roster.js
-index 99da75a..ae27730 100644
+index 99da75a..e81f111 100644
 --- a/a/lib/types/roster.js
 +++ b/b/lib/types/roster.js
-@@ -19,8 +19,8 @@ export function resolveActiveMember(root, state, rawName) {
+@@ -19,8 +19,12 @@ export function resolveActiveMember(root, state, rawName) {
      const name = rawName.trim();
      if (name === 'lead')
          return { id: root.id, name };
@@ -337,10 +444,14 @@ index 99da75a..ae27730 100644
 -    if (member === undefined || member.phase !== 'active') {
 +    const member = state.members.find(candidate => candidate.name === name && candidate.phase === 'active');
 +    if (member === undefined) {
++        const resting = state.members.find(candidate => candidate.name === name && candidate.phase === 'resting');
++        if (resting !== undefined) {
++            throw new TeamError(`teammate "${name}" is resting — the Team is not working; the Lead must run /team work first`, 'TEAM_MEMBER_RESTING');
++        }
          throw new TeamError(`active teammate "${name}" not found`, 'TEAM_MEMBER_NOT_FOUND');
      }
      return { id: member.id, name };
-@@ -67,7 +67,18 @@ export class TeamRoster {
+@@ -67,7 +71,18 @@ export class TeamRoster {
          try {
              const parentId = agent.session.header.parentSession;
              if (parentId !== undefined) {
@@ -360,7 +471,7 @@ index 99da75a..ae27730 100644
                  if (root !== undefined) {
                      const member = this.journal.state(root).members.find(candidate => candidate.id === agent.id);
                      if (member?.phase === 'active' || member?.phase === 'provisioning') {
-@@ -113,6 +124,8 @@ export class TeamRoster {
+@@ -113,6 +128,8 @@ export class TeamRoster {
                  diagnostics: [],
              }];
          for (const member of state.members) {
@@ -369,7 +480,18 @@ index 99da75a..ae27730 100644
              const live = this.ctx.agents.get(member.id);
              const model = live?.options.model ?? root.options.model;
              result.push({
-@@ -190,6 +203,34 @@ export class TeamRoster {
+@@ -123,7 +140,9 @@ export class TeamRoster {
+                     ? 'failed'
+                     : member.phase === 'provisioning'
+                         ? 'provisioning'
+-                        : availability(live),
++                        : member.phase === 'resting'
++                            ? 'resting'
++                            : availability(live),
+                 description: member.description,
+                 provider: member.provider,
+                 context: member.context,
+@@ -190,6 +209,81 @@ export class TeamRoster {
          this.ctx.subagents.interrupt(target.id, { kind: 'ancestor', agent: caller });
          return { previousStatus };
      }
@@ -401,10 +523,57 @@ index 99da75a..ae27730 100644
 +            this.ctx.subagents.interrupt(target.id, { kind: 'ancestor', agent: caller });
 +        return { previousStatus };
 +    }
++    /**
++     * Put every active teammate to rest: each one stays on the roster but can no
++     * longer be addressed, so no teammate turn can start until wake().
++     * Live turns are interrupted.
++     * @param caller - exact live Lead Agent.
++     * @returns the names put to rest.
++     */
++    async rest(caller) {
++        const membership = this.membership(caller);
++        if (membership.role !== 'lead')
++            throw new TeamError('only the Team Lead can rest the team', 'TEAM_LEAD_REQUIRED');
++        const root = membership.root;
++        const state = this.journal.state(root);
++        const sleeping = state.members.filter(member => member.phase === 'active');
++        for (const member of sleeping) {
++            await this.journal.appendAndFlush(root, 'team/member', {
++                version: 2,
++                teamId: TeamId(root.id),
++                member: { ...member, phase: 'resting' },
++            });
++            const live = this.ctx.agents.get(member.id);
++            if (live !== undefined)
++                this.ctx.subagents.interrupt(member.id, { kind: 'ancestor', agent: caller });
++        }
++        return { resting: sleeping.map(member => member.name) };
++    }
++    /**
++     * Wake every resting teammate back to active.
++     * @param caller - exact live Lead Agent.
++     * @returns the names woken.
++     */
++    async wake(caller) {
++        const membership = this.membership(caller);
++        if (membership.role !== 'lead')
++            throw new TeamError('only the Team Lead can wake the team', 'TEAM_LEAD_REQUIRED');
++        const root = membership.root;
++        const state = this.journal.state(root);
++        const woken = state.members.filter(member => member.phase === 'resting');
++        for (const member of woken) {
++            await this.journal.appendAndFlush(root, 'team/member', {
++                version: 2,
++                teamId: TeamId(root.id),
++                member: { ...member, phase: 'active' },
++            });
++        }
++        return { woken: woken.map(member => member.name) };
++    }
      /**
       * Group exact live roster children by their current Lead for runtime teardown.
       * @returns each live Lead and the roster child ids currently in the Agent registry.
-@@ -240,10 +281,10 @@ export class TeamRoster {
+@@ -240,10 +334,10 @@ export class TeamRoster {
          };
          await this.journal.transact(root.id, async () => {
              const state = this.journal.state(root);

@@ -49,7 +49,7 @@ const teamMemberSnapshotSchema = z.object({
     description: z.string(),
     provider: z.string(),
     context: z.enum(['fresh', 'fork']),
-    phase: z.enum(['provisioning', 'active', 'failed', 'retired']),
+    phase: z.enum(['provisioning', 'active', 'failed', 'retired', 'resting']),
     error: z.string().optional(),
 }).strict();
 const teamTaskSnapshotSchema = z.object({
@@ -201,7 +201,9 @@ function applyCurrentTeamEvent(state, event) {
                 }
                 const settles = prior.phase === 'provisioning' && (member.phase === 'active' || member.phase === 'failed');
                 const retires = member.phase === 'retired' && (prior.phase === 'active' || prior.phase === 'failed');
-                if (!settles && !retires) {
+                const rests = member.phase === 'resting' && prior.phase === 'active';
+                const wakes = member.phase === 'active' && prior.phase === 'resting';
+                if (!settles && !retires && !rests && !wakes) {
                     throw new Error(`teammate "${member.name}" has an invalid ${prior.phase} -> ${member.phase} transition`);
                 }
             }
@@ -252,7 +254,7 @@ const teamMemberProjectionSchema = z.object({
     id: sessionIdSchema,
     name: z.string(),
     role: z.enum(['lead', 'teammate']),
-    phase: z.enum(['provisioning', 'active', 'failed', 'retired']),
+    phase: z.enum(['provisioning', 'active', 'failed', 'retired', 'resting']),
     error: z.string().optional(),
 }).strict();
 const teamTaskViewSchema = z.object({

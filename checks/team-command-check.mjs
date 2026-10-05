@@ -24,6 +24,7 @@ check("exports apply/inject/Config", typeof plugin.apply === "function" && Array
 let registered;
 const spawnCalls = [];
 const retiredCalls = [];
+const restWakes = [];
 let spawnError = void 0;
 const ctx = {
 	agents: { list: () => [] },
@@ -47,6 +48,14 @@ const ctx = {
 		retireTeammate: async (agent, name) => {
 			retiredCalls.push(name);
 			return { previousStatus: name === "b1" ? "inactive" : "running" };
+		},
+		restTeam: async () => {
+			restWakes.push("rest");
+			return { resting: restWakes.includes("rest") ? ["b1", "b2"] : [] };
+		},
+		wakeTeam: async () => {
+			restWakes.push("work");
+			return { woken: ["b1", "b2"] };
 		}
 	}
 };
@@ -70,6 +79,16 @@ const listed = await run(" list ");
 check("/team list succeeds", listed.kind === "success", JSON.stringify(listed));
 check("/team list shows every member", ["lead", "b1", "b2"].every((name) => listed.text.includes(name)), listed.text);
 check("/team list shows a member model", listed.text.includes("zai/glm-5.3"), listed.text);
+
+// --- rest / work: the Team-wide work switch ---
+const rested = await run("rest");
+check("/team rest succeeds", rested.kind === "success" && rested.text.includes("the Team is resting"), JSON.stringify(rested));
+check("rest names every teammate it put down", rested.text.includes("b1") && rested.text.includes("b2"), rested.text);
+check("rest says no turn can start until /team work", rested.text.includes("/team work"), rested.text);
+const worked = await run("work");
+check("/team work succeeds", worked.kind === "success" && worked.text.includes("working again"), JSON.stringify(worked));
+check("rest/wake reached the service in order", restWakes.join(",") === "rest,work", JSON.stringify(restWakes));
+check("the usage hint mentions rest and work", registered.input.hint.includes("rest") && registered.input.hint.includes("work"), registered.input.hint);
 
 // --- add with an explicit route ---
 spawnCalls.length = 0;
@@ -131,6 +150,10 @@ check("retire reports the previous status", retired.text.includes("inactive"), r
 const cases = [
 	["retire", "usage"],
 	["retire b1 b2", "usage"],
+	["rest now", "usage: /team rest"],
+	["rest --", "usage: /team rest"],
+	["work --", "usage: /team work"],
+	["work b1", "usage: /team work"],
 	["bogus", "unknown Team subcommand"],
 	["add b5 --model bogus -- x", "<provider>/<model>"],
 	["add b5", "initial task"],

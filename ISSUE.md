@@ -243,6 +243,34 @@ RendererStartupFailure: Renderer boot failed for 1 plugin(s)
 
 ---
 
+## Issue F — 没有「全队暂停」这回事：要停下所有队友只能逐个 interrupt，且停完还能被派活
+
+### 现象
+
+想「让整个团队先别干活」时，唯一的手段是对每个在跑的成员各调一次 `interrupt_agent`。这只能打断**当前那一轮**：消息队列里排着的、以及之后任何一条 `send_message`，都会让成员**立刻再起一轮**。于是「暂停」只能靠人不停重复点。用户的原话是：**「我指的休息是整个团队不工作，不是不调用本地模型，是不工作」**。
+
+### 根因（`dsh-experimental-agent-team`）
+
+- `interrupt_agent` 是运行时的动作，**不写名册状态**：`interrupt(caller, targetName)` 只对 live 的成员调 `ctx.subagents.interrupt(...)`，名册里该成员仍是 `active`；
+- 成员能否被寻址、能否用团队工具，取决于名册相位：`resolveActiveMember` 只认 `phase === "active"`，`TeamRoster.tryMembership` 也只给 `active` / `provisioning` 的成员成员身份。既然没有任何「停」的相位，就没有一个 durable 的地方记录「全队现在不工作」；
+- 于是「停」只能是**逐轮**的运行时行为，而不是**团队级**状态 —— 换个入口（面板、`send_message`、别的成员转发）又能派活。
+
+### 建议的上游修法
+
+把「休息」做成名册的一等相位（`resting`）与一对团队级操作：
+
+- `rest(caller)`：把所有 `active` 成员翻成 `resting`（一条 durable `team/member` 事件/成员），并对 live 的那些 `interrupt` 一次；
+- `wake(caller)`：把 `resting` 翻回 `active`；
+- **机械闸门**：`resolveActiveMember` 只认 `active` ⇒ resting 成员不可寻址，`send_message` / `interrupt_agent` 直接给一个可理解的错误（本仓库用 `TEAM_MEMBER_RESTING`），这样「不工作」不依赖每个入口各自记得检查；
+- 名字与席位判据仍按 `phase !== "retired"` ⇒ resting **仍占名字与席位**（不该被别人顶掉），并且 Lead 不受影响（Lead 走另一条 `tryMembership` 分支）；
+- 相位写在 journal 里 ⇒ 重启后仍在休息。代价：回退到原版包时，journal 里的 `resting` 事件会让重放校验失败（改 node_modules 这类补丁的通病）。
+
+### 本仓库对应实现
+
+`patches/dsh-experimental-agent-team.patch`（相位 + `rest()` / `wake()` + `TEAM_MEMBER_RESTING`）、`patches/dsh-experimental-tool-agent-team.patch`（`/team rest` / `/team work`）、`patches/dsh-experimental-client-ui-agent-team.patch`（面板休息开关 + 「休息中」徽标）。回归断言在 `checks/rest-check.mjs`（14/14）。
+
+---
+
 ## 附：为什么不直接提「退休」这个补丁？
 
 本地的 `patches/` 是**发行代码热补丁**（改 `resources/app/node_modules`），只适合自用验证，不适合作为上游贡献形式：

@@ -583,18 +583,20 @@ function parseTeamCommand(rawInput) {
 	const tokens = (separates === null ? raw : raw.slice(0, separates.index)).split(/\s+/u).filter((token) => token !== "");
 	const addUsage = 'usage: /team add <name> [--fork] [--model <provider>/<model>] -- <prompt>';
 	if (tokens.length === 0 || tokens[0] === "help")
-		return { error: `usage: /team list | /team retire <name> | /team model <name> <provider>/<model> | ${addUsage}` };
+		return { error: `usage: /team list | /team retire <name> | /team rest | /team work | /team model <name> <provider>/<model> | ${addUsage}` };
 	const [action, ...rest] = tokens;
 	if (action === "list") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team list" };
 	if (action === "retire")
 		return separates === null && rest.length === 1 ? { action, name: rest[0] } : { error: "usage: /team retire <name>" };
+	if (action === "rest") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team rest" };
+	if (action === "work") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team work" };
 	if (action === "model") {
 		const usage = "usage: /team model <name> <provider>/<model>";
 		if (separates !== null || rest.length !== 2) return { error: usage };
 		const route = parseModelRoute(rest[1]);
 		return route === void 0 ? { error: `${usage} — got "${rest[1]}"` } : { action, name: rest[0], agentOptions: route };
 	}
-	if (action !== "add") return { error: `unknown Team subcommand "${action}"; use list, add, retire, or model` };
+	if (action !== "add") return { error: `unknown Team subcommand "${action}"; use list, add, retire, rest, work, or model` };
 	const parsed = { action, context: "fresh" };
 	for (let index = 0; index < rest.length; index += 1) {
 		const token = rest[index];
@@ -634,6 +636,14 @@ async function executeTeamCommand(ctx, providers, invocation) {
 		if (parsed.action === "retire") {
 			const { previousStatus } = await ctx.agentTeams.retireTeammate(agent, parsed.name);
 			return { kind: "success", text: `retired teammate "${parsed.name}" (was ${previousStatus})` };
+		}
+		if (parsed.action === "rest") {
+			const { resting } = await ctx.agentTeams.restTeam(agent);
+			return { kind: "success", text: resting.length === 0 ? "the Team was already at rest" : `the Team is resting: ${resting.join(", ")} — no teammate turn can start until /team work` };
+		}
+		if (parsed.action === "work") {
+			const { woken } = await ctx.agentTeams.wakeTeam(agent);
+			return { kind: "success", text: woken.length === 0 ? "the Team was already working" : `the Team is working again: ${woken.join(", ")}` };
 		}
 		if (parsed.action === "model") {
 			// A teammate's model is frozen into its subagent descriptor at creation and
@@ -711,8 +721,8 @@ function apply(ctx, config = {}) {
 		commandCtx.commands.register({
 			definitionId: CommandDefinitionId("@deepseek-ai/dsh-experimental-tool-agent-team"),
 			name: "team",
-			description: "Manage Agent Team members: list the roster, add a teammate, retire one, or re-route one to another model.",
-			input: { hint: "list | retire <name> | model <name> <provider>/<model> | add <name> [--fork] [--model <provider>/<model>] -- <prompt>" },
+			description: "Manage Agent Team members: list the roster, add a teammate, retire one, rest or wake the whole Team, or re-route one to another model.",
+			input: { hint: "list | retire <name> | rest | work | model <name> <provider>/<model> | add <name> [--fork] [--model <provider>/<model>] -- <prompt>" },
 			handler: (invocation) => executeTeamCommand(ctx, resolved, invocation)
 		});
 	});

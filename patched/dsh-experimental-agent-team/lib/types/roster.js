@@ -21,6 +21,10 @@ export function resolveActiveMember(root, state, rawName) {
         return { id: root.id, name };
     const member = state.members.find(candidate => candidate.name === name && candidate.phase === 'active');
     if (member === undefined) {
+        const resting = state.members.find(candidate => candidate.name === name && candidate.phase === 'resting');
+        if (resting !== undefined) {
+            throw new TeamError(`teammate "${name}" is resting — the Team is not working; the Lead must run /team work first`, 'TEAM_MEMBER_RESTING');
+        }
         throw new TeamError(`active teammate "${name}" not found`, 'TEAM_MEMBER_NOT_FOUND');
     }
     return { id: member.id, name };
@@ -136,7 +140,9 @@ export class TeamRoster {
                     ? 'failed'
                     : member.phase === 'provisioning'
                         ? 'provisioning'
-                        : availability(live),
+                        : member.phase === 'resting'
+                            ? 'resting'
+                            : availability(live),
                 description: member.description,
                 provider: member.provider,
                 context: member.context,
@@ -230,6 +236,53 @@ export class TeamRoster {
         if (live !== undefined)
             this.ctx.subagents.interrupt(target.id, { kind: 'ancestor', agent: caller });
         return { previousStatus };
+    }
+    /**
+     * Put every active teammate to rest: each one stays on the roster but can no
+     * longer be addressed, so no teammate turn can start until wake().
+     * Live turns are interrupted.
+     * @param caller - exact live Lead Agent.
+     * @returns the names put to rest.
+     */
+    async rest(caller) {
+        const membership = this.membership(caller);
+        if (membership.role !== 'lead')
+            throw new TeamError('only the Team Lead can rest the team', 'TEAM_LEAD_REQUIRED');
+        const root = membership.root;
+        const state = this.journal.state(root);
+        const sleeping = state.members.filter(member => member.phase === 'active');
+        for (const member of sleeping) {
+            await this.journal.appendAndFlush(root, 'team/member', {
+                version: 2,
+                teamId: TeamId(root.id),
+                member: { ...member, phase: 'resting' },
+            });
+            const live = this.ctx.agents.get(member.id);
+            if (live !== undefined)
+                this.ctx.subagents.interrupt(member.id, { kind: 'ancestor', agent: caller });
+        }
+        return { resting: sleeping.map(member => member.name) };
+    }
+    /**
+     * Wake every resting teammate back to active.
+     * @param caller - exact live Lead Agent.
+     * @returns the names woken.
+     */
+    async wake(caller) {
+        const membership = this.membership(caller);
+        if (membership.role !== 'lead')
+            throw new TeamError('only the Team Lead can wake the team', 'TEAM_LEAD_REQUIRED');
+        const root = membership.root;
+        const state = this.journal.state(root);
+        const woken = state.members.filter(member => member.phase === 'resting');
+        for (const member of woken) {
+            await this.journal.appendAndFlush(root, 'team/member', {
+                version: 2,
+                teamId: TeamId(root.id),
+                member: { ...member, phase: 'active' },
+            });
+        }
+        return { woken: woken.map(member => member.name) };
     }
     /**
      * Group exact live roster children by their current Lead for runtime teardown.

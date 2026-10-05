@@ -3,9 +3,10 @@
 //
 // `lib/panel/client.js` is a build artifact: it is `patched/dsh-experimental-client-ui-agent-team/lib/client.js`
 // (the panel this repository adds to DSH Agent Teams) published under this package's own
-// module id, with the roster controls row removed (retirement and re-routing live in the
-// hot-patch half of this repository until upstream accepts them) and the add command
-// pointed at this package's own `/teammates` command.
+// module id, with the parts that need the hot-patch half or the author's machine removed
+// (the roster controls row: retire + re-route; the team rest switch: the `resting` phase;
+// the local-model gate panel: an unrelated local tool on 127.0.0.1:11499) and the add
+// command pointed at this package's own `/teammates` command.
 //
 //   node tools/build-plugin.mjs            # rewrite lib/panel/client.js
 //   node tools/build-plugin.mjs --check    # fail when the artifact is out of date
@@ -32,6 +33,19 @@ function withoutControlsRow(text) {
 	return `${text.slice(0, start)}const controls = false;\n\t\t\t${text.slice(next)}`;
 }
 
+/**
+ * Remove the team rest switch and the local-model gate panel from the panel body.
+ * Resting is a hot-patch phase (`resting` in the roster state machine) that the
+ * shipped runtime rejects, so `/team rest` cannot work here; the gate panel drives
+ * `tools/llm-gate.mjs` of an unrelated local project, hardcoded to
+ * `http://127.0.0.1:11499`. Both would be buttons that fail for a stranger.
+ */
+function withoutRestAndGate(text) {
+	const site = /\(0, react_jsx_runtime\.jsx\)\(LocalModelGate, \{ t \}\), \(0, react_jsx_runtime\.jsx\)\(TeamRestSwitch, \{[\s\S]*?\}\),/;
+	if (!site.test(text)) throw new Error('the rest switch / local-model gate render site was not found');
+	return text.replace(site, '');
+}
+
 function transform(source) {
 	let text = source;
 	const replaceOnce = (from, to, label) => {
@@ -50,7 +64,7 @@ function transform(source) {
 		'stylesheet id'
 	);
 	replaceOnce('/team add ${name}', '/teammates add ${name}', 'add command');
-	text = withoutControlsRow(text);
+	text = withoutRestAndGate(withoutControlsRow(text));
 	if (!text.includes('const controls = false;')) throw new Error('the controls row survived the rewrite');
 	if (!text.includes('memberRetire:')) throw new Error('the locale dictionary was damaged by the rewrite');
 	return `${text}\n`;
@@ -72,4 +86,4 @@ await writeFile(TARGET, artifact);
 console.log(`wrote lib/panel/client.js (${artifact.length} B) from patched/dsh-experimental-client-ui-agent-team/lib/client.js`);
 console.log('  - module id  ->', PACKAGE);
 console.log('  - add command -> /teammates add <name> [--fork] [--model p/m] -- <prompt>');
-console.log('  - retire and re-route controls removed (they belong to the hot-patch half until upstream accepts them)');
+console.log('  - retire, re-route, rest and local-model-gate controls removed (hot-patch half / author machine only)');
