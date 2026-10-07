@@ -75,7 +75,8 @@ node apply.mjs --revert    # 还原 7 个文件 + profile 里加的那一行
 2. `node apply.mjs --check` 是否 `PATCHED` + `WIRED`；
 3. 入口在**会话标题栏右侧**，面板只列**当前会话自己那支小队**（在队友的会话里看到的是那支队友的小队）；
 4. **模型下拉是空的**：说明那台机器的 provider 没配（面板照 host 报上来的模型目录列，不做白名单）；
-5. 还是不行：`Ctrl+F5` 后看 `agent-team: …` 那行字（面板的错误边界会把渲染异常显示出来，而不是默默消失）。
+5. **闸口面板报 `Failed to fetch`**：这是网络层失败，不是跨域也不是权限 —— 说明 `127.0.0.1:11499` **没有进程在听**（闸口工具没起来）。先 `curl.exe -s http://127.0.0.1:11499/gate/health`（`Failed to connect` 就是没起），再把 `F:\shudong\tools\llm-gate.mjs` 跑起来；验证用 `curl.exe -s http://127.0.0.1:11499/gate/state` 应返回 200 且带 `access-control-allow-origin: *`（闸口只对 `/gate*` 放 CORS）。同一个闸口不在时，走 11499 的模型请求也是直接连不上（不是 503 被拒），日志里不会有记录 —— "日志没记录"不等于服务在；
+6. 还是不行：`Ctrl+F5` 后看 `agent-team: …` 那行字（面板的错误边界会把渲染异常显示出来，而不是默默消失）。
 
 ## 5. 这个补丁改了什么（7 个文件 / 3 个包）
 
