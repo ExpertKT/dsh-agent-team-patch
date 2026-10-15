@@ -3,7 +3,7 @@
 给 DSH 桌面版的 Agent Teams 补四件事：
 
 1. **队友能退休** —— 退场后不再占席位、名字可复用，但 durable 名册 / 任务归属 / 消息历史保留；
-2. **每个队友单独选模型** —— 面板里每人一行下拉，加人时也能指定 `provider/model`（`/team add … --model p/m`）。队友**已经在跑之后换模型 = 退休 + 同名重建**：新会话用新模型，旧会话作为只读历史留下 —— 子会话的模型在创建时就被写进 descriptor，事后改不了（详见 `ISSUE.md` 的 Issue B）；
+2. **每个队友单独选模型** —— 面板里每人一行下拉，加人时也能指定 `provider/model`（`/team add … --model p/m`），并可选带 reasoning effort（`p/m#high`，或 `--effort high`）。队友**已经在跑之后换模型 = 退休 + 同名重建**：新会话用新模型，旧会话作为只读历史留下 —— 子会话的模型在创建时就被写进 descriptor，事后改不了（详见 `ISSUE.md` 的 Issue B）。若部署启用了 Subagent 模型白名单（`subagentModelSelection.allowedModels`），白名单外的路由会在创建队友**之前**被拒；`/team models` 只列白名单允许的路由及其可用 effort；
 3. **全队开工 / 休息** —— `/team rest` 把全队队友翻成 `resting` 相位并打断在跑的那一轮：此后队友**不可寻址**（`send_message` / `interrupt_agent` 直接抛 `TEAM_MEMBER_RESTING`），谁也别想给它派活；Lead 自己不受影响，`/team work` 叫醒。状态写在 journal 里，重启仍在休息；
 4. **会话标题栏的团队面板** —— 名册（状态、当前模型、退休按钮）、任务板、加人表单（名字 / 任务 / 模型 / `--fork`）、休息开关；同一批补丁里还有本机 **本地模型闸口** 面板（`/gate` 三态，见 §9）。
 
@@ -84,20 +84,21 @@ node apply.mjs --revert    # 还原 7 个文件 + profile 里加的那一行
 |---|---|---|
 | `dsh-experimental-agent-team` | `lib/index.js` | 相位加 `retired` / `resting`；`active\|failed → retired`、`active ↔ resting` 守卫；席位只数非 retired；名字唯一性只在在役范围；名册/投影跳过退休成员；Lead-only `retire()` / `rest()` / `wake()`；休息成员不可寻址（`TEAM_MEMBER_RESTING`）；`spawnAdmitted` 转发 `agentOptions`（选模型） |
 | 同上 | `lib/invariant.js`、`lib/types/index.js`、`lib/types/projection.js`、`lib/types/roster.js` | 同源拷贝，为语义一致一起改（发行包内无 importer，但 `exports` 里有） |
-| `dsh-experimental-tool-agent-team` | `lib/index.js` | 注册 `retire_teammate`；`spawn_teammate` 加可选 `model`（`provider/model`）；新增 `/team` 命令（`list \| retire <name> \| rest \| work \| add <name> [--fork] [--model p/m] -- <prompt>`，以及 `model <name> <p/m>` = 退休 + 同名重建） |
+| `dsh-experimental-tool-agent-team` | `lib/index.js` | 注册 `retire_teammate`；`spawn_teammate` 加可选 `model`（`provider/model[#effort]`）与 `reasoning_effort`；新增 `/team` 命令（`list \| models \| retire <name> \| rest \| work \| add <name> [--fork] [--model p/m[#effort]] [--effort <id>] -- <prompt>`，以及 `model <name> <p/m[#effort]>` = 退休 + 同名重建）；`models` 列可选路由与 effort；白名单与 effort 预检都在创建前拒绝 |
 | `dsh-experimental-client-ui-agent-team` | `lib/client.js` | 团队面板（名册 / 任务卡 / 加人表单 / 每成员模型下拉 / 退休按钮 / 休息开关）；换模型先弹确认，确认后走 `/team model`（旧会话退役、同名新建）；Remote 命名空间统一走 `ctx.get`；面板外包错误边界；本地模型闸口面板（`LocalModelGate` + `/gate` 的 CORS） |
 
 `package.json` 不补（registry 安装只改了依赖键顺序，是噪声）。逐行 diff 见 `patches/*.patch`，完整哈希见 [`manifest.json`](manifest.json)。
 
 ## 6. 它怎么被验证的
 
-**9 个离线检查，全部 exit 0**（`node checks/<名字>.mjs`）：
+**10 个离线检查，全部 exit 0**（`node checks/<名字>.mjs`）：
 
 | 检查 | 覆盖 |
 |---|---|
 | `retire-check` / `retire-event-check` / `reuse-check` | 退休可写入、投影隐藏、三条非法转换仍被拒；同名重建重放不报 failure；**Lead agent 不活跃时队友仍解析到本队**（9/9） |
 | `rest-check` | `active ↔ resting` 合法、`provisioning/retired → resting` 被拒；休息成员不可寻址（`TEAM_MEMBER_RESTING`）、名字不被别人顶掉、仍出现在投影里；`rest()` 只打断 live 的那个；`wake()` 后回 active（14/14） |
 | `team-command-check` | `/team` 的 list / add / retire / model / rest / work、`--model`、`--` 后原文照传、重建复用旧 description 与 context、各类畸形输入不抛（全绿） |
+| `route-check` | 每队友路由的新接口：`p/m#effort` 解析、`reasoning_effort` 参数、纯 `p/m` 行为不变、`p/#effort` 与 `p/m#` 这类空段被拒、白名单放行/拒绝、模型不提供的 effort 在创建前被拒、`llm` 缺席时预检跳过、`/team add --effort`、`/team models`、usage 文本（19/19） |
 | `team-ui-check` | 面板动作的调用契约（含「下拉改成先确认、确认后才发 `/team model`」）+ **真渲染烟囱**（假 react hooks 直接调组件，覆盖 `TeamMemberRow` / `TaskCard` / `TeamRestSwitch` / `LocalModelGate`，断言遍历真的走到了它们）覆盖「新队友还没选模型」这条崩溃 |
 | `remote-namespace-check` | 用发行包里的真 Cordis 复刻命名空间形状，实测 `ctx.get` 无需声明、`ctx.remote.<ns>` 未声明会抛 |
 | `profile-wiring-check` | 临时 fixture 里跑完 `--check → apply → --check → --revert`，含「不重写 app 文件」「逐字节还原」「自动探测安装位置」(18/18) |

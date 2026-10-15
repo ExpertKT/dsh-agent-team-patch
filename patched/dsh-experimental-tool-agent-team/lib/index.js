@@ -95,14 +95,140 @@ function describeTask(task) {
 	const flat = task.trim().replace(/\s+/gu, " ");
 	return flat.length > 120 ? `${flat.slice(0, 117)}...` : flat;
 }
-/** Split one `provider/model` route; provider names and model ids never contain a slash. */
+/**
+ * Split one `provider/model` route, with an optional `#effort` suffix.
+ *
+ * Provider names and model ids never contain a slash or a `#`, so the first `/`
+ * separates provider from model and the last `#` separates model from the
+ * adapter-owned reasoning effort. A route whose model or effort part is empty
+ * (`zai/`, `zai/glm#`, `zai/#high`) is malformed and rejected, which keeps every
+ * route that used to parse doing exactly what it did before.
+ */
 function parseModelRoute(route) {
 	const separator = route.indexOf("/");
 	if (separator <= 0 || separator === route.length - 1) return void 0;
+	const rest = route.slice(separator + 1);
+	const hash = rest.lastIndexOf("#");
+	const provider = route.slice(0, separator);
+	if (hash < 0) return { provider, model: rest };
+	const model = rest.slice(0, hash);
+	const effort = rest.slice(hash + 1);
+	if (model === "" || effort === "") return void 0;
+	return { provider, model, reasoningEffort: effort };
+}
+/** Render one parsed route back as `provider/model[#effort]`. */
+function formatModelRoute(route) {
+	return `${route.provider}/${route.model}${route.reasoningEffort === void 0 ? "" : `#${route.reasoningEffort}`}`;
+}
+/**
+ * Read the deployment's teammate model allowlist.
+ *
+ * `@deepseek-ai/dsh-tool-subagent/model-selection-settings` owns this singleton
+ * and the shipped `subagent` tool already enforces it for child Agents; a Team
+ * spawn is the same kind of model-facing choice, so it reads the same policy.
+ * @param ctx - a Context that may carry the settings service.
+ * @returns the allowed routes, or undefined when every route is selectable.
+ */
+function allowedModelRoutes(ctx) {
+	const settings = ctx.get === void 0 ? void 0 : ctx.get("subagentModelSelection");
+	if (settings === void 0 || typeof settings.current !== "function") return void 0;
+	const current = settings.current();
+	if (current?.enabled !== true) return void 0;
+	return Array.isArray(current.allowedModels) ? current.allowedModels : [];
+}
+/**
+ * Reject one requested route that the deployment's allowlist forbids.
+ * @param ctx - a Context that may carry the settings service.
+ * @param route - the parsed `provider`/`model` route being requested.
+ */
+function assertRouteAllowed(ctx, route) {
+	const allowed = allowedModelRoutes(ctx);
+	if (allowed === void 0) return;
+	if (allowed.some((entry) => entry.provider === route.provider && entry.model === route.model)) return;
+	const listed = allowed.map((entry) => `${entry.provider}/${entry.model}`).join(", ");
+	throw new Error(`teammate model "${route.provider}/${route.model}" is not allowed by the Subagent model-selection allowlist; allowed: ${listed || "(none)"}`);
+}
+/**
+ * Refuse an effort the selected route does not advertise, before a teammate
+ * exists.
+ *
+ * The descriptor records the effort and the adapter rejects an unsupported one,
+ * but that surfaces as a failed turn after the teammate was created. When the
+ * `llm` service is mounted the check moves in front of creation; the runtime
+ * owns effort metadata, so an unavailable service only skips the preflight.
+ * @param ctx - a Context that may carry the `llm` service.
+ * @param options - the requested child Agent options.
+ */
+async function assertEffortSupported(ctx, options) {
+	if (options.reasoningEffort === void 0) return;
+	const llm = ctx.get === void 0 ? void 0 : ctx.get("llm");
+	if (llm === void 0 || typeof llm.resolveModelInfo !== "function") return;
+	let info;
+	try {
+		info = await llm.resolveModelInfo(options.provider, options.model);
+	} catch {
+		// An unregistered route is the adapter's error to report at request time.
+		return;
+	}
+	const efforts = info?.reasoning?.efforts;
+	if (!Array.isArray(efforts) || efforts.length === 0) return;
+	if (efforts.some((effort) => effort.id === options.reasoningEffort)) return;
+	const listed = efforts
+		.map((effort) => `${effort.id}${info.reasoning?.defaultEffort === effort.id ? " (default)" : ""}`)
+		.join(", ");
+	throw new Error(`model "${options.provider}/${options.model}" does not advertise reasoning effort "${options.reasoningEffort}"; advertised: ${listed}`);
+}
+/** Build the child Agent options one requested route implies. */
+function routeToAgentOptions(route) {
 	return {
-		provider: route.slice(0, separator),
-		model: route.slice(separator + 1)
+		provider: route.provider,
+		model: route.model,
+		...route.reasoningEffort === void 0 ? {} : { reasoningEffort: route.reasoningEffort }
 	};
+}
+/** Describe one route's advertised reasoning efforts, best effort. */
+async function effortSuffix(llm, provider, model) {
+	if (typeof llm.resolveModelInfo !== "function") return "";
+	try {
+		const info = await llm.resolveModelInfo(provider, model);
+		const efforts = info?.reasoning?.efforts;
+		if (!Array.isArray(efforts) || efforts.length === 0) return "";
+		const listed = efforts.map((effort) => `${effort.id}${info.reasoning?.defaultEffort === effort.id ? " (default)" : ""}`).join(", ");
+		return ` — efforts: ${listed}`;
+	} catch {
+		return "";
+	}
+}
+/**
+ * Render the selectable teammate models, with their advertised efforts.
+ * @param ctx - a Context that may carry the `llm` and allowlist services.
+ */
+async function describeTeammateModels(ctx) {
+	const llm = ctx.get === void 0 ? void 0 : ctx.get("llm");
+	if (llm === void 0 || typeof llm.listProviders !== "function") throw new Error("cannot list teammate models: the `llm` service is not mounted");
+	const allowed = allowedModelRoutes(ctx);
+	const lines = [];
+	for (const provider of llm.listProviders()) {
+		const routes = allowed === void 0 ? void 0 : allowed.filter((entry) => entry.provider === provider.id);
+		if (allowed !== void 0 && routes.length === 0) continue;
+		let models = [];
+		try {
+			models = await llm.listModels(provider.id);
+		} catch (error) {
+			lines.push(`${provider.id} — model catalog unavailable (${error instanceof Error ? error.message : String(error)})`);
+			continue;
+		}
+		const selectable = allowed === void 0 ? models : models.filter((model) => routes.some((entry) => entry.model === model.id));
+		for (const model of selectable) lines.push(`${provider.id}/${model.id}${await effortSuffix(llm, provider.id, model.id)}`);
+		// An allowlist entry may name a model the catalog does not advertise; the
+		// deployment still allows it, so it stays visible rather than silently gone.
+		for (const route of routes ?? []) {
+			if (models.some((model) => model.id === route.model)) continue;
+			lines.push(`${provider.id}/${route.model}`);
+		}
+	}
+	if (lines.length === 0) lines.push("No teammate model route is selectable on this deployment.");
+	return lines.join("\n");
 }
 /** One shared task, matching the public `TeamTaskView`. */
 const TASK_VIEW_SCHEMA = {
@@ -268,7 +394,7 @@ function install(agent, ctx, config) {
 		}));
 		register(scoped.tools.register(defineTool({
 			name: "spawn_teammate",
-			description: "Create one named, durable teammate. Only the Team Lead may call this tool.",
+			description: "Create one named, durable teammate. Only the Team Lead may call this tool. Pass `model` (and optionally `reasoning_effort`) to run the teammate on its own LLM route instead of the Lead's.",
 			parameters: {
 				name: {
 					type: "string",
@@ -292,7 +418,11 @@ function install(agent, ctx, config) {
 				},
 				model: {
 					type: "string",
-					description: "Optional `<provider>/<model>` LLM route for the teammate. Defaults to the Lead's route."
+					description: "Optional `<provider>/<model>` LLM route for the teammate, optionally `<provider>/<model>#<effort>`. Defaults to the Lead's route."
+				},
+				reasoning_effort: {
+					type: "string",
+					description: "Optional adapter-owned reasoning effort for the teammate. Requires `model`; a route that does not advertise it is refused before the teammate exists."
 				}
 			},
 			output: jsonOutput(SPAWN_VALUE_SCHEMA),
@@ -300,7 +430,16 @@ function install(agent, ctx, config) {
 				const agent = callingAgent(exec.agent, "spawn_teammate");
 				const context = args.context ?? "fresh";
 				const model = args.model === void 0 ? void 0 : parseModelRoute(args.model);
-				if (args.model !== void 0 && model === void 0) throw new Error(`model must be "<provider>/<model>", got "${args.model}"`);
+				if (args.model !== void 0 && model === void 0) throw new Error(`model must be "<provider>/<model>" or "<provider>/<model>#<effort>", got "${args.model}"`);
+				if (args.reasoning_effort !== void 0 && model === void 0) throw new Error("reasoning_effort requires an explicit model route");
+				const route = model === void 0 ? void 0 : {
+					...model,
+					...args.reasoning_effort === void 0 ? {} : { reasoningEffort: args.reasoning_effort }
+				};
+				if (route !== void 0) {
+					assertRouteAllowed(ctx, route);
+					await assertEffortSupported(ctx, route);
+				}
 				return { member: modelMember((await ctx.agentTeams.spawnTeammate(agent, {
 					name: args.name,
 					description: args.description,
@@ -313,7 +452,7 @@ function install(agent, ctx, config) {
 					}],
 					context,
 					provider: context === "fork" ? config.forkProvider : config.freshProvider,
-					...model === void 0 ? {} : { agentOptions: model },
+					...route === void 0 ? {} : { agentOptions: routeToAgentOptions(route) },
 					signal: exec.signal
 				})).member) };
 			}
@@ -581,22 +720,23 @@ function parseTeamCommand(rawInput) {
 	const separates = /(?:^|\s)--(?=\s|$)/u.exec(raw);
 	const prompt = separates === null ? "" : raw.slice(separates.index + separates[0].length).trim();
 	const tokens = (separates === null ? raw : raw.slice(0, separates.index)).split(/\s+/u).filter((token) => token !== "");
-	const addUsage = 'usage: /team add <name> [--fork] [--model <provider>/<model>] -- <prompt>';
-	if (tokens.length === 0 || tokens[0] === "help")
-		return { error: `usage: /team list | /team retire <name> | /team rest | /team work | /team model <name> <provider>/<model> | ${addUsage}` };
+	const addUsage = 'usage: /team add <name> [--fork] [--model <provider>/<model>[#<effort>]] -- <prompt>';
+	const allUsage = `usage: /team list | /team models | /team retire <name> | /team rest | /team work | /team model <name> <provider>/<model>[#<effort>] | ${addUsage}`;
+	if (tokens.length === 0 || tokens[0] === "help") return { error: allUsage };
 	const [action, ...rest] = tokens;
 	if (action === "list") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team list" };
+	if (action === "models") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team models" };
 	if (action === "retire")
 		return separates === null && rest.length === 1 ? { action, name: rest[0] } : { error: "usage: /team retire <name>" };
 	if (action === "rest") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team rest" };
 	if (action === "work") return separates === null && rest.length === 0 ? { action } : { error: "usage: /team work" };
 	if (action === "model") {
-		const usage = "usage: /team model <name> <provider>/<model>";
+		const usage = "usage: /team model <name> <provider>/<model>[#<effort>]";
 		if (separates !== null || rest.length !== 2) return { error: usage };
 		const route = parseModelRoute(rest[1]);
 		return route === void 0 ? { error: `${usage} — got "${rest[1]}"` } : { action, name: rest[0], agentOptions: route };
 	}
-	if (action !== "add") return { error: `unknown Team subcommand "${action}"; use list, add, retire, rest, work, or model` };
+	if (action !== "add") return { error: `unknown Team subcommand "${action}"; use list, models, add, retire, rest, work, or model` };
 	const parsed = { action, context: "fresh" };
 	for (let index = 0; index < rest.length; index += 1) {
 		const token = rest[index];
@@ -604,8 +744,16 @@ function parseTeamCommand(rawInput) {
 		if (token === "--model") {
 			const value = rest[index + 1];
 			const route = value === void 0 ? void 0 : parseModelRoute(value);
-			if (route === void 0) return { error: `--model needs <provider>/<model>, got "${value ?? ""}"` };
+			if (route === void 0) return { error: `--model needs <provider>/<model>[#<effort>], got "${value ?? ""}"` };
 			parsed.agentOptions = route;
+			index += 1;
+			continue;
+		}
+		if (token === "--effort") {
+			const value = rest[index + 1];
+			if (value === void 0 || value.startsWith("--")) return { error: `--effort needs a reasoning effort id, got "${value ?? ""}"` };
+			if (parsed.agentOptions === void 0) return { error: "--effort requires --model <provider>/<model> in the same /team add" };
+			parsed.agentOptions = { ...parsed.agentOptions, reasoningEffort: value };
 			index += 1;
 			continue;
 		}
@@ -629,10 +777,16 @@ async function executeTeamCommand(ctx, providers, invocation) {
 	if (parsed.error !== void 0) return { kind: "error", text: parsed.error };
 	const agent = invocation.agent;
 	try {
+		if (parsed.agentOptions !== void 0) {
+			assertRouteAllowed(ctx, parsed.agentOptions);
+			await assertEffortSupported(ctx, parsed.agentOptions);
+		}
 		if (parsed.action === "list") {
 			const rows = ctx.agentTeams.listMembers(agent).map((member) => `${member.name} · ${member.role} · ${member.status}${member.model === void 0 ? "" : ` · ${member.model}`}`);
 			return { kind: "success", text: rows.length === 0 ? "No Team members." : rows.join("\n") };
 		}
+		if (parsed.action === "models")
+			return { kind: "success", text: await describeTeammateModels(ctx) };
 		if (parsed.action === "retire") {
 			const { previousStatus } = await ctx.agentTeams.retireTeammate(agent, parsed.name);
 			return { kind: "success", text: `retired teammate "${parsed.name}" (was ${previousStatus})` };
@@ -653,7 +807,7 @@ async function executeTeamCommand(ctx, providers, invocation) {
 			const target = ctx.agentTeams.listMembers(agent).find((member) => member.name === parsed.name);
 			if (target === void 0) return { kind: "error", text: `teammate "${parsed.name}" is not in this Team` };
 			if (target.role === "lead") return { kind: "error", text: `"${parsed.name}" is the Team Lead; pick a teammate` };
-			const route = `${parsed.agentOptions.provider}/${parsed.agentOptions.model}`;
+			const route = formatModelRoute(parsed.agentOptions);
 			const { previousStatus } = await ctx.agentTeams.retireTeammate(agent, parsed.name);
 			const fork = target.context === "fork";
 			const { member } = await ctx.agentTeams.spawnTeammate(agent, {
@@ -668,7 +822,7 @@ async function executeTeamCommand(ctx, providers, invocation) {
 				}],
 				context: fork ? "fork" : "fresh",
 				provider: fork ? providers.forkProvider : providers.freshProvider,
-				agentOptions: parsed.agentOptions,
+				agentOptions: routeToAgentOptions(parsed.agentOptions),
 				signal: invocation.signal
 			});
 			return { kind: "success", text: `rebuilt teammate "${member.name}" on ${route} (was ${target.model ?? "the Lead's model"}); previous Session ${target.id} retired` };
@@ -721,8 +875,8 @@ function apply(ctx, config = {}) {
 		commandCtx.commands.register({
 			definitionId: CommandDefinitionId("@deepseek-ai/dsh-experimental-tool-agent-team"),
 			name: "team",
-			description: "Manage Agent Team members: list the roster, add a teammate, retire one, rest or wake the whole Team, or re-route one to another model.",
-			input: { hint: "list | retire <name> | rest | work | model <name> <provider>/<model> | add <name> [--fork] [--model <provider>/<model>] -- <prompt>" },
+			description: "Manage Agent Team members: list the roster, list the selectable teammate models, add a teammate, retire one, rest or wake the whole Team, or re-route one to another model.",
+			input: { hint: "list | models | retire <name> | rest | work | model <name> <provider>/<model>[#<effort>] | add <name> [--fork] [--model <provider>/<model>[#<effort>]] [--effort <id>] -- <prompt>" },
 			handler: (invocation) => executeTeamCommand(ctx, resolved, invocation)
 		});
 	});

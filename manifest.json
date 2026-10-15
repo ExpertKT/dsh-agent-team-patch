@@ -49,9 +49,9 @@
     {
       "package": "dsh-experimental-tool-agent-team",
       "path": "lib/index.js",
-      "bytes": 28368,
+      "bytes": 36387,
       "pristine": "cafdbb7a050431b17251527789d0fcb2e9b95c006a7513786c2c43fea3aca937",
-      "patched": "11c801a7da9432e21e8e910c7fdb1f21ea57e3821d0f628ce7bb166455d2ac7a"
+      "patched": "1b9597e7ed349c21cfde6f600719075b6664ed96b4efb2a13653adfdb495ec86"
     }
   ]
 }
